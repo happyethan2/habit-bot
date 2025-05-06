@@ -61,6 +61,20 @@ async def checkin(ctx, *args):
     if not args:
         await ctx.reply("You need to specify a habit, e.g. `!checkin meditation Monday`")
         return
+    
+    # ─── 1.1 Enforce only unlocked habits ───
+    current_rank   = load_group_rank()
+    allowed        = {r["habit"] for r in RANKS[:current_rank]}
+    # if they try to log a habit that exists but isn’t in allowed
+    for arg in args:
+        name = arg.lower()
+        if name in HABITS and name not in allowed:
+            # find the rank that unlocks it
+            req = next(r for r in RANKS if r["habit"] == name)
+            return await ctx.reply(
+                f"🚫 You can’t log **{name}** yet — it unlocks at "
+                f"Rank {req['level']} ({req['name'].title()})."
+            )
 
     # 2️⃣  Parse the habits+values
     parsed = []
@@ -73,13 +87,25 @@ async def checkin(ctx, *args):
             return
 
         if cfg["unit"] == "minutes":
-            minutes = cfg["min"]
+            # use .get so streaming picks up min=0
+            minutes = cfg.get("min", 0)
+            # consume an explicit number if provided
             if i + 1 < len(args) and args[i+1].isdigit():
-                minutes = int(args[i+1]); i += 1
-            if minutes < cfg["min"]:
+                minutes = int(args[i+1])
+                i += 1
+
+            # enforce minimum (for other habits)
+            if minutes < cfg.get("min", 0):
                 await ctx.reply(f"{task} must be ≥ {cfg['min']} min.")
                 return
+
+            # enforce maximum (for streaming)
+            if cfg.get("max") is not None and minutes > cfg["max"]:
+                await ctx.reply(f"{task} cannot exceed {cfg['max']} minutes per day.")
+                return
+
             parsed.append(f"{task}:{minutes}")
+
 
         elif cfg["unit"] == "bool":
             parsed.append(task)
@@ -147,94 +173,123 @@ async def checkin(ctx, *args):
 
 
 @bot.command()
-async def progress(ctx):
-    # 🔄 reload the freshest progress.json
+async def progress(ctx, member: commands.MemberConverter = None):
+    """
+    Show a member’s progress for this week.
+    """
+    # reload & pick user
     global DATA
     DATA = load()
-
     summary, week = get_week_summary()
-    if not summary:
-        return await ctx.reply("No check-ins recorded for this week yet.")
+    target = member or ctx.author
+    uid    = str(target.id)
 
-    # Determine which habits to show based on the current group rank
-    relevant = [r["habit"] for r in RANKS[:GROUP_RANK]]
-    seen = set()
-    relevant_unique = []
-    for h in relevant:
+    if uid not in summary:
+        return await ctx.reply(f"No check-ins for {target.display_name} this week.")
+
+    habits = summary[uid]
+
+    # which habits unlocked?
+    unlocked = [r["habit"] for r in RANKS[:load_group_rank()]]
+    seen, relevant = set(), []
+    for h in unlocked:
         if h not in seen:
             seen.add(h)
-            relevant_unique.append(h)
+            relevant.append(h)
 
-    # Build the embed
+    # overall %
+    total_done   = sum(min(habits.get(h,0), HABITS[h].get("weekly_target",7)) for h in relevant)
+    total_target = sum(  HABITS[h].get("weekly_target",7)              for h in relevant)
+    pct = (total_done/total_target*100) if total_target else 100
+    pct_str = f"{pct:.1f}%"
+
+    # fixed bar length
+    BAR_LEN = 14
+    def make_bar(done, targ):
+        if targ <= 0:
+            return "░" * BAR_LEN
+        filled = round(done / targ * BAR_LEN)
+        filled = max(0, min(BAR_LEN, filled))
+        return "█" * filled + "░" * (BAR_LEN - filled)
+
+    # build code-block table
+    max_len = max(len(h) for h in relevant)
+    lines = []
+    for h in relevant:
+        done = habits.get(h, 0)
+        targ = HABITS[h].get("weekly_target", 7)
+        bar  = make_bar(done, targ)
+        lines.append(f"{h.ljust(max_len)}  {bar}  {done}/{targ}")
+
+    table = "```\n" + "\n".join(lines) + "\n```"
+
+    # send embed
     week_dt = dt.date.fromisoformat(week)
     embed = Embed(
-        title=f"📊 Week Starting — {week_dt:%A %d %b %Y}",
+        title=f"📊 Progress for {target.display_name}",
+        description=f"Week of {week_dt:%A %d %b %Y}\n➡️ Total: **{pct_str}**",
         colour=0x3498db
     )
-
-    for uid, habits in summary.items():
-        name = await display_name_for(uid, ctx)
-
-        # Compute total completion % for only the relevant habits
-        total_done = sum(
-            min(habits.get(h, 0), HABITS[h].get("weekly_target", 7))
-            for h in relevant_unique
-        )
-        total_target = sum(
-            HABITS[h].get("weekly_target", 7)
-            for h in relevant_unique
-        )
-        pct_str = f"{(total_done / total_target * 100):.1f}%"
-
-        # Build the value lines
-        lines = [f"total-completion: **{pct_str}**"]
-        for h in relevant_unique:
-            done   = habits.get(h, 0)
-            target = HABITS[h].get("weekly_target", 7)
-            lines.append(f"{h}: {done}/{target}")
-
-        embed.add_field(name=name, value="\n".join(lines), inline=False)
-
+    embed.add_field(name="📋 Habit Breakdown", value=table, inline=False)
     await ctx.send(embed=embed)
 
 
 
 @bot.command()
 async def ranks(ctx):
-    # 1️⃣ Build the “All Ranks” embed section
-    embed = Embed(title="🏅 All Ranks", colour=0x00aaff)
-    for r in RANKS:
-        level = r["level"]
-        name  = r["name"].title()
-        habit = r["habit"].capitalize()
-        target= r["target"]
-        embed.add_field(
-            name=f"{level}. {name}",
-            value=f"{habit} • {target}",
-            inline=False
-        )
+    """
+    Show all ranks in two columns, with each habit in “Habit: target” format.
+    """
+    current = load_group_rank()
 
-    # 2️⃣ Add a blank line separator
+    EMOJI = {
+        1:  "🥫", 2:  "🧲", 3: "🥉", 4: "🔩", 5: "⚙️",
+        6:  "🥈", 7:  "🥇", 8: "💿", 9: "💎", 10: "🪐",
+        11: "☢️", 12: "🎓", 13: "🏆",
+    }
+
+    half  = (len(RANKS) + 1) // 2
+    left  = RANKS[:half]
+    right = RANKS[half:]
+
+    left_text = "\n\n".join(
+        f"{EMOJI[r['level']]} **{r['level']}. {r['name'].title()}**\n"
+        f"  {r['habit'].capitalize()}: {r['target']}"
+        for r in left
+    )
+    right_text = "\n\n".join(
+        f"{EMOJI[r['level']]} **{r['level']}. {r['name'].title()}**\n"
+        f"  {r['habit'].capitalize()}: {r['target']}"
+        for r in right
+    )
+
+    embed = Embed(title="🏅 Ranks Overview", colour=0x00aaff)
+    embed.add_field(name="\u200b", value=left_text,  inline=True)
+    embed.add_field(name="\u200b", value=right_text, inline=True)
+
+    # blank spacer
     embed.add_field(name="\u200b", value="\u200b", inline=False)
 
-    # 3️⃣ Show the group’s current rank
-    level = GROUP_RANK
-    rank  = next((x for x in RANKS if x["level"] == level), None)
-    if rank:
-        embed.add_field(
-            name="🎖 Current Group Rank",
-            value=f"**{rank['level']}. {rank['name'].title()}**\n" +
-                  f"Challenge: {rank['habit'].capitalize()} • {rank['target']}",
-            inline=False
-        )
-    else:
-        embed.add_field(
-            name="🎖 Current Group Rank",
-            value="No rank assigned yet.",
-            inline=False
-        )
+        # — current group rank —
+    curr = next(r for r in RANKS if r["level"] == current)
+    embed.add_field(
+        name="🎖 Current Group Rank",
+        value=f"**{current}. {curr['name'].title()}**",
+        inline=False
+    )
 
+    # — current challenge —
+    embed.add_field(
+        name="🏁 Current Challenge",
+        value=f"{curr['habit'].capitalize()}: {curr['target']}",
+        inline=False
+    )
+
+    # footer hint
+    embed.set_footer(text="Use !rank for details or !nextchallenge to preview what’s next.")
+    
     await ctx.send(embed=embed)
+
 
 
 @bot.command()
@@ -243,7 +298,7 @@ async def rank(ctx):
     Show the group’s current rank and its full cumulative challenge.
     """
     # current rank info
-    level = GROUP_RANK
+    level = load_group_rank()
     rank  = next((r for r in RANKS if r["level"] == level), None)
     if not rank:
         return await ctx.reply("No rank data available.")
@@ -269,146 +324,167 @@ async def rank(ctx):
 
 
 @bot.command()
-async def rankup(ctx):
+async def rankup(ctx, target: str = None):
     """
-    Manually bump the group’s rank by 1 and show the cumulative challenge.
+    Promote the group’s rank.
+    Usage:
+      !rankup               → bump up by 1
+      !rankup <level>       → set rank to that level
+      !rankup <name>        → set rank to that named rank
     """
-    global GROUP_RANK
-    old = GROUP_RANK
-    if old >= len(RANKS):
-        return await ctx.reply("The group is already at the highest rank.")
+    old = load_group_rank()
 
-    # bump and persist
-    GROUP_RANK += 1
-    save_group_rank(GROUP_RANK)
+    # determine new level
+    if target is None:
+        new = old + 1
+    else:
+        # try parsing as integer level
+        try:
+            lvl = int(target)
+        except ValueError:
+            # fallback: look up by rank name (case-insensitive)
+            match = next((r for r in RANKS if r["name"].lower() == target.lower()), None)
+            if not match:
+                return await ctx.reply(f"🚫 Invalid rank: `{target}`")
+            lvl = match["level"]
+        new = lvl
 
-    # find the new rank entry
-    new_rank = next(r for r in RANKS if r["level"] == GROUP_RANK)
+    # clamp within bounds
+    new = max(1, min(new, len(RANKS)))
 
-    # build an embed
+    if new <= old:
+        return await ctx.reply(f"🚫 Cannot rank up to {new} (current is {old}). Use `!rankdown` to go down.")
+
+    save_group_rank(new)
+    rank = next(r for r in RANKS if r["level"] == new)
+
     embed = Embed(
-        title=f"🎉 Group Promoted to Rank {GROUP_RANK}: {new_rank['name'].title()}",
+        title=f"🎉 Group Promoted to Rank {new}: {rank['name'].title()}",
         colour=0x2ecc71
     )
-
-    # list all cumulative tasks up to this rank
     tasks = "\n".join(
-        f"- {r['habit'].capitalize()} {r['target']}"
-        for r in RANKS[:GROUP_RANK]
+        f"- **{r['habit'].capitalize()}:** {r['target']}"
+        for r in RANKS[:new]
     )
     embed.add_field(
-        name="🆕 Current Challenge",
+        name="🆕 New Cumulative Challenge",
         value=f"Complete all of the following:\n{tasks}",
         inline=False
     )
-
     await ctx.send(embed=embed)
 
 
 @bot.command()
-async def rankdown(ctx):
+async def rankdown(ctx, target: str = None):
     """
-    Manually drop the group’s rank by 1 and show the cumulative challenge.
+    Demote the group’s rank.
+    Usage:
+      !rankdown           → drop down by 1
+      !rankdown <level>   → set rank to that level
+      !rankdown <name>    → set rank to that named rank
     """
-    global GROUP_RANK
-    old = GROUP_RANK
-    if old <= 1:
-        return await ctx.reply("The group is already at the lowest rank.")
+    old = load_group_rank()
 
-    # derank and persist
-    GROUP_RANK -= 1
-    save_group_rank(GROUP_RANK)
+    # determine new level
+    if target is None:
+        new = old - 1
+    else:
+        try:
+            lvl = int(target)
+        except ValueError:
+            match = next((r for r in RANKS if r["name"].lower() == target.lower()), None)
+            if not match:
+                return await ctx.reply(f"🚫 Invalid rank: `{target}`")
+            lvl = match["level"]
+        new = lvl
 
-    # find the new rank entry
-    new_rank = next(r for r in RANKS if r["level"] == GROUP_RANK)
+    # clamp within bounds
+    new = max(1, min(new, len(RANKS)))
 
-    # build an embed
+    if new >= old:
+        return await ctx.reply(f"🚫 Cannot rank down to {new} (current is {old}). Use `!rankup` to go up.")
+
+    save_group_rank(new)
+    rank = next(r for r in RANKS if r["level"] == new)
+
     embed = Embed(
-        title=f"⚠️ Group Demoted to Rank {GROUP_RANK}: {new_rank['name'].title()}",
+        title=f"⚠️ Group Demoted to Rank {new}: {rank['name'].title()}",
         colour=0xe74c3c
     )
-
-    # list all cumulative tasks up to this rank
     tasks = "\n".join(
-        f"- {r['habit'].capitalize()} {r['target']}"
-        for r in RANKS[:GROUP_RANK]
+        f"- **{r['habit'].capitalize()}:** {r['target']}"
+        for r in RANKS[:new]
     )
     embed.add_field(
         name="🔽 Current Challenge",
         value=f"Complete all of the following:\n{tasks}",
         inline=False
     )
-
     await ctx.send(embed=embed)
 
 
 @bot.command()
 async def history(ctx, *args):
     """
-    Show a member’s check-in history for a week.
+    Show a member’s check‐in history for a week.
     Usage:
-      !history                        → your current week
-      !history 2025-04-28             → your specified week
-      !history @Friend                → friend’s current week
-      !history @Friend 2025-04-28     → friend’s specified week
+      !history                → your current week
+      !history 2025-05-05     → your specified week
+      !history @Friend        → Friend’s current week
+      !history @Friend 2025-05-05
     """
-    # 1️⃣ reload data
     data = load()
 
-    # 2️⃣ determine which member
+    # 1️⃣ Pick target member
     if ctx.message.mentions:
         member = ctx.message.mentions[0]
     else:
         member = ctx.author
 
-    # 3️⃣ strip mention tokens from args
+    # Strip mention out of args
     mention_ids = {f"<@{member.id}>", f"<@!{member.id}>"}
     args = [a for a in args if a not in mention_ids]
 
-    # 4️⃣ determine week_id
+    # 2️⃣ Determine week
     week_id = args[0] if args else current_week_id()
-
-    # 5️⃣ parse the week’s Monday
     week_dt = dt.date.fromisoformat(week_id)
 
-    # 6️⃣ fetch that member’s entries
-    uid = str(member.id)
+    # 3️⃣ Fetch that user’s days
+    uid       = str(member.id)
     week_data = data.get(week_id, {})
     user_days = week_data.get(uid, {})
 
     if not user_days:
         return await ctx.reply(
-            f"No check-ins for {member.display_name} for week of {week_dt:%A %d %b %Y}."
+            f"No check‐ins for {member.display_name} in week of {week_dt:%A %d %b %Y}."
         )
 
-    # 7️⃣ build embed
+    # 4️⃣ Build embed
     embed = Embed(
         title=f"🕑 History for {member.display_name}",
         description=f"Week of {week_dt:%A %d %b %Y}",
         colour=0x9b59b6
     )
 
+    # 5️⃣ One field per day, with bullet‐list of habits
     for day_iso in sorted(user_days):
-        day_date = dt.date.fromisoformat(day_iso)
-        day_name = day_date.strftime("%A %d %b")
-        tasks    = user_days[day_iso]
+        d = dt.date.fromisoformat(day_iso)
+        day_str = d.strftime("%A %d %b")
 
-        pretty = []
-        for tok in tasks:
+        lines = []
+        for tok in user_days[day_iso]:
             name, *val = tok.split(":")
             if val:
-                num    = val[0]
-                target = next((r["target"] for r in RANKS if r["habit"] == name), "")
-                unit   = "".join(ch for ch in target if ch.isalpha())
-                pretty.append(f"- **{name}:** {num}{unit}")
+                # infer unit label from HABITS config
+                cfg = HABITS[name]
+                unit = "min" if cfg["unit"]=="minutes" else ""
+                # special case reading→pages
+                if name=="reading": unit = "pages"
+                lines.append(f"- **{name}**: {val[0]} {unit}".rstrip())
             else:
-                pretty.append(f"- **{name}**")
+                lines.append(f"- **{name}**")
 
-        embed.add_field(
-            name=f"__{day_name}__",    # underlined day header
-            value="\n".join(pretty),
-            inline=False
-        )
+        embed.add_field(name=day_str, value="\n".join(lines), inline=False)
 
     await ctx.send(embed=embed)
 
@@ -486,7 +562,7 @@ async def nextchallenge(ctx):
     Preview the next rank’s cumulative challenge for the group.
     """
     # determine the upcoming rank
-    next_level = GROUP_RANK + 1
+    next_level = load_group_rank() + 1
     if next_level > len(RANKS):
         return await ctx.reply("🎉 The group is already at the highest rank!")
 
@@ -519,77 +595,108 @@ async def help_command(ctx):
     """
     embed = Embed(
         title="📋 HabitBot Commands",
-        description="Here’s a list of everything you can do with HabitBot:",
+        description="Here’s what you can do with HabitBot:",
         colour=0x95a5a6
     )
 
     embed.add_field(
-        name="!ping",
+        name="🔹 `!ping`",
         value="Check bot responsiveness.",
         inline=False
     )
+
     embed.add_field(
-        name="!checkin <habit> [value] [weekday]",
+        name="🔹 `!checkin <habit> [value] [weekday]`",
         value=(
-            "Log a habit for today (default) or another day of this week.\n"
-            "- e.g. `!checkin meditation`\n"
-            "- e.g. `!checkin meditation 45 Tuesday`\n"
-            "- e.g. `!checkin exercise Friday`"
+            "Log a habit for today (default) or another day this week.\n"
+            "• `!checkin meditation`\n"
+            "• `!checkin meditation 45 Tuesday`\n"
+            "• `!checkin exercise Friday`\n"
+            "• `!checkin bedtime`"
         ),
         inline=False
     )
+
     embed.add_field(
-        name="!progress",
-        value="Show the group’s progress for the current week.",
+        name="🔹 `!progress [@User]`",
+        value=(
+            "Show a single member’s progress for the current week.\n"
+            "• `!progress` → your progress\n"
+            "• `!progress @Friend` → Friend’s progress"
+        ),
         inline=False
     )
+
     embed.add_field(
-        name="!history [@User] [week]",
+        name="🔹 `!history [@User] [week]`",
         value=(
             "Show check-ins for you or another member for a week.\n"
-            "- Default: your current week\n"
-            "- e.g. `!history @Friend`\n"
-            "- e.g. `!history 2025-04-28`\n"
-            "- e.g. `!history @Friend 2025-04-28`"
+            "• Default: current week\n"
+            "• `!history @Friend`\n"
+            "• `!history 2025-04-28`\n"
+            "• `!history @Friend 2025-04-28`"
         ),
         inline=False
     )
+
     embed.add_field(
-        name="!delete <habit> [weekday]",
+        name="🔹 `!delete <habit> [weekday]`",
         value=(
             "Remove an entry you logged.\n"
-            "- e.g. `!delete meditation`\n"
-            "- e.g. `!delete meditation Saturday`"
+            "• `!delete meditation`\n"
+            "• `!delete bedtime Saturday`"
         ),
         inline=False
     )
+
     embed.add_field(
-        name="!nextchallenge",
+        name="🔹 `!nextchallenge`",
         value="Preview the upcoming rank’s cumulative challenge.",
         inline=False
     )
+
     embed.add_field(
-        name="!rank",
-        value="Show the group’s current rank and its cumulative challenge.",
+        name="🔹 `!rank`",
+        value="Show the group’s current rank and its full cumulative challenge.",
         inline=False
     )
+
     embed.add_field(
-        name="!ranks",
+        name="🔹 `!ranks`",
         value="List all possible ranks and show the current group rank.",
         inline=False
     )
+
     embed.add_field(
-        name="!rankup",
-        value="Manually promote the group’s rank by 1.",
+        name="🔹 `!rankup [level|name]`",
+        value=(
+            "Promote the group’s rank by 1, or jump to a specific rank.\n"
+            "• `!rankup` → bump up by 1\n"
+            "• `!rankup 5` → set rank to level 5\n"
+            "• `!rankup platinum` → jump to Platinum"
+        ),
         inline=False
     )
+
     embed.add_field(
-        name="!rankdown",
-        value="Manually demote the group’s rank by 1.",
+        name="🔹 `!rankdown [level|name]`",
+        value=(
+            "Demote the group’s rank by 1, or jump to a specific rank.\n"
+            "• `!rankdown` → drop down by 1\n"
+            "• `!rankdown 2` → set rank to level 2\n"
+            "• `!rankdown bronze` → jump to Bronze"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔹 `!help`",
+        value="Display this help message.",
         inline=False
     )
 
     await ctx.send(embed=embed)
+
 
 
 

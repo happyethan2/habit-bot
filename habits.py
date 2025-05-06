@@ -21,12 +21,12 @@ HABITS = {
         "min": 30,
         "reply": lambda mins: f"**walking** for **{mins} min**",
     },
-    "no porn": {
+    "porn": {
         "unit": "bool",
         "weekly_target": 7,
         "reply": lambda _: "**no porn**",
     },
-    "no PMO": {
+    "pmo": {
         "unit": "bool",
         "weekly_target": 7,
         "reply": lambda _: "**no PMO**",
@@ -36,14 +36,15 @@ HABITS = {
         "weekly_target": 4,
         "reply": lambda _: "**diet**",
     },
-    "11pm bedtime": {
+    "bedtime": {
         "unit": "bool",
         "weekly_target": 4,
         "reply": lambda _: "**11pm bedtime**",
     },
     "streaming": {
         "unit": "minutes",
-        "min": 60,
+        "min": 0,
+        "max": 60,
         "reply": lambda mins: f"**streaming** for **{mins} min**",
     },
 }

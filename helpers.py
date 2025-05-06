@@ -5,51 +5,33 @@ from datetime import datetime, timezone, timedelta, date
 from collections import defaultdict
 
 from storage import load
-from rank_storage import load as load_ranks, save as save_ranks
+from rank_storage import load as load_group_rank, save as save_group_rank
 from habits import HABITS
 from ranks import RANKS
 
-# — persistent state —
-# We reload DATA each call to ensure fresh progress data
-USER_RANKS = load_ranks()
-
 # meta for last‐evaluated week
 META_FILE = Path("meta.json")
-
 def load_meta():
     if META_FILE.exists():
         return json.loads(META_FILE.read_text())
     return {}
-
-
 def save_meta(m):
     META_FILE.write_text(json.dumps(m, indent=2))
 
 # — week helpers —
 def current_week_id():
-    """Return ISO date string for this week’s Monday."""
     today = datetime.now(timezone.utc).date()
     monday = today - timedelta(days=today.weekday())
     return monday.isoformat()
 
-
 def get_week_summary():
-    """Tallies days each user logged each habit this week."""
+    """For the current week only."""
     data = load()
     week = current_week_id()
-    week_data = data.get(week, {})
-    summary = defaultdict(lambda: defaultdict(int))
-    for uid, days in week_data.items():
-        for tokens in days.values():
-            for tok in tokens:
-                name = tok.split(":", 1)[0]
-                summary[uid][name] += 1
-    return summary, week
-
-
+    return get_summary_for(week), week
 
 def get_summary_for(week_id: str):
-    """Tallies days each user logged each habit for a given week."""
+    """For any ISO‐week key."""
     data = load()
     week_data = data.get(week_id, {})
     summary = defaultdict(lambda: defaultdict(int))
@@ -62,11 +44,9 @@ def get_summary_for(week_id: str):
 
 # — Discord helper —
 async def display_name_for(uid: str, ctx):
-    """Return a readable name for a Discord user ID."""
     member = ctx.guild.get_member(int(uid)) if ctx.guild else None
     if member:
         return member.display_name
-
     try:
         user = await ctx.bot.fetch_user(int(uid))
         return user.display_name
@@ -76,36 +56,45 @@ async def display_name_for(uid: str, ctx):
 # — rank evaluator —
 async def evaluate_week(week_id: str, ctx):
     """
-    Evaluate performance for week_id, adjust USER_RANKS up/down, announce.
+    Evaluate group performance for week_id:
+      • rank up if EVERYONE met all targets
+      • rank down if EVERYONE missed at least one target
     """
     summary = get_summary_for(week_id)
     lines = [f"🏁 Weekly evaluation for week starting {week_id}"]
 
-    for uid, habits in summary.items():
-        name = await display_name_for(uid, ctx)
-        old = USER_RANKS.get(uid, 1)
-        new = old
+    # load the current group rank
+    old_rank = load_group_rank()
+    new_rank = old_rank
 
-        all_met = all(
+    # did everyone meet every habit?
+    all_met_all = all(
+        all(
             habits.get(h, 0) >= HABITS[h].get("weekly_target", 7)
             for h in HABITS
         )
-        none_met = all(
-            habits.get(h, 0) == 0
+        for habits in summary.values()
+    )
+    # did everyone miss at least one habit?
+    all_missed_one = all(
+        any(
+            habits.get(h, 0) < HABITS[h].get("weekly_target", 7)
             for h in HABITS
         )
+        for habits in summary.values()
+    )
 
-        if all_met and old < len(RANKS):
-            new += 1
-            status = f"🎉 {name} ranked up to **{new}**!"
-        elif none_met and old > 1:
-            new -= 1
-            status = f"⚠️ {name} ranked down to **{new}**."
-        else:
-            status = f"— {name} stays at **{old}**."
+    if all_met_all and old_rank < len(RANKS):
+        new_rank += 1
+        lines.append(f"🎉 Group ranked up to **{new_rank}**!")
+    elif all_missed_one and old_rank > 1:
+        new_rank -= 1
+        lines.append(f"⚠️ Group ranked down to **{new_rank}**.")
+    else:
+        lines.append(f"— Group stays at **{old_rank}**.")
 
-        USER_RANKS[uid] = new
-        lines.append(status)
+    # persist the updated rank
+    save_group_rank(new_rank)
 
-    save_ranks(USER_RANKS)
+    # announce
     await ctx.send("\n".join(lines))
