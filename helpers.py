@@ -10,6 +10,11 @@ from rank_storage import load as load_group_rank, save as save_group_rank
 from habits import HABITS
 from ranks import RANKS
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+
 # timezone definition
 LOCAL_TZ = ZoneInfo("Australia/Adelaide")
 
