@@ -14,7 +14,7 @@ from habits import HABITS
 from rank_storage import load as load_group_rank, save as save_group_rank
 
 from helpers import load_meta, current_week_id, display_name_for, get_week_summary, save_meta, evaluate_week
-
+from helpers import LOCAL_TZ
 
 
 load_dotenv()
@@ -121,7 +121,7 @@ async def checkin(ctx, *args):
         mon      = date.fromisoformat(current_week_id())
         day_date = mon + timedelta(days=days[override])
     else:
-        day_date = datetime.now(timezone.utc).date()
+        day_date = datetime.now(LOCAL_TZ).date()
 
     day_iso = day_date.isoformat()
 
@@ -287,7 +287,7 @@ async def ranks(ctx):
 
     # footer hint
     embed.set_footer(text="Use !rank for details or !nextchallenge to preview what’s next.")
-    
+
     await ctx.send(embed=embed)
 
 
@@ -523,7 +523,7 @@ async def delete(ctx, *args):
         mon = date.fromisoformat(current_week_id())
         day_date = mon + timedelta(days=days[override])
     else:
-        day_date = datetime.now(timezone.utc).date()
+        day_date = datetime.now(LOCAL_TZ).date()
     day_iso = day_date.isoformat()
     human_date = day_date.strftime("%A, %d %b")
 
