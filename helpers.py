@@ -3,14 +3,19 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date
 from collections import defaultdict
+from zoneinfo import ZoneInfo
 
 from storage import load
 from rank_storage import load as load_group_rank, save as save_group_rank
 from habits import HABITS
 from ranks import RANKS
 
+# timezone definition
+LOCAL_TZ = ZoneInfo("Australia/Adelaide")
+
 # meta for last‐evaluated week
 META_FILE = Path("meta.json")
+
 def load_meta():
     if META_FILE.exists():
         return json.loads(META_FILE.read_text())
@@ -20,7 +25,7 @@ def save_meta(m):
 
 # — week helpers —
 def current_week_id():
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(LOCAL_TZ).date()
     monday = today - timedelta(days=today.weekday())
     return monday.isoformat()
 
