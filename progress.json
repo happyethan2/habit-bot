@@ -1,0 +1,121 @@
+{
+  "2025-04-28": {
+    "109596804374360064": {
+      "2025-04-30": [
+        "meditation:30",
+        "exercise"
+      ],
+      "2025-05-04": [
+        "meditation:30",
+        "exercise"
+      ],
+      "2025-05-03": [
+        "meditation:30"
+      ],
+      "2025-05-02": [
+        "exercise",
+        "meditation:30"
+      ],
+      "2025-05-01": [
+        "meditation:30"
+      ],
+      "2025-04-29": [
+        "meditation:30"
+      ],
+      "2025-04-28": [
+        "meditation:30",
+        "exercise"
+      ]
+    }
+  },
+  "2025-05-05": {
+    "109596804374360064": {
+      "2025-05-05": [
+        "reading:17",
+        "meditation:30",
+        "exercise"
+      ],
+      "2025-05-06": [
+        "meditation:30",
+        "exercise",
+        "reading:10"
+      ],
+      "2025-05-07": [
+        "exercise",
+        "reading:13",
+        "meditation:30"
+      ],
+      "2025-05-08": [
+        "meditation:35",
+        "reading:13"
+      ],
+      "2025-05-09": [
+        "reading:11",
+        "meditation:30"
+      ],
+      "2025-05-10": [
+        "meditation:30",
+        "exercise"
+      ]
+    },
+    "241453518567768064": {
+      "2025-05-05": [
+        "meditation:30",
+        "reading:10",
+        "exercise"
+      ],
+      "2025-05-06": [
+        "reading:11",
+        "meditation:30"
+      ],
+      "2025-05-07": [
+        "exercise",
+        "reading:10",
+        "meditation:30"
+      ],
+      "2025-05-08": [
+        "exercise",
+        "reading:10",
+        "meditation:30"
+      ],
+      "2025-05-09": [
+        "reading:18",
+        "meditation:30"
+      ],
+      "2025-05-10": [
+        "exercise",
+        "reading:10",
+        "meditation:30"
+      ]
+    },
+    "492714444451741706": {
+      "2025-05-05": [
+        "meditation:30",
+        "reading:10"
+      ],
+      "2025-05-06": [
+        "meditation:30",
+        "reading:10"
+      ],
+      "2025-05-07": [
+        "exercise",
+        "meditation:30",
+        "reading:10"
+      ],
+      "2025-05-08": [
+        "meditation:30",
+        "reading:11"
+      ],
+      "2025-05-09": [
+        "reading:13",
+        "meditation:30",
+        "exercise"
+      ],
+      "2025-05-10": [
+        "reading:10",
+        "meditation:30",
+        "exercise"
+      ]
+    }
+  }
+}
