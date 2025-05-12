@@ -19,6 +19,7 @@ from helpers import LOCAL_TZ
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+DEV_USER_ID = 109596804374360064
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -38,138 +39,109 @@ bot = commands.Bot(
 @bot.command()
 async def checkin(ctx, *args):
     """
-    Usage examples
-      !checkin meditation            → logs today (30m default)
-      !checkin meditation 45         → logs today for 45m
-      !checkin exercise              → logs exercise today
-      !checkin exercise Friday       → logs exercise this Friday
-      !checkin meditation 50 Monday  → logs meditation Monday 50m
+    Log one or more habits for today (or a specified weekday).
+    Allows default values for minute-based habits.
+
+    Usage examples:
+      !checkin meditation
+      !checkin meditation 45
+      !checkin reading 20 exercise
+      !checkin walking 45 friday
     """
     if not args:
-        await ctx.reply("Try `!checkin meditation 40` or `!checkin exercise Friday`")
-        return
+        return await ctx.reply("Try `!checkin meditation` or `!checkin reading 20 exercise`")
 
-    # 1️⃣  Optional DOTW override?
+    # 1️⃣ Optional day-of-week override
     days = {d.lower(): i for i, d in enumerate(
-        ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+        ["Monday","Tuesday","Wednesday","Thursday",
+         "Friday","Saturday","Sunday"]
     )}
     override = None
     if args[-1].lower() in days:
         override = args[-1].lower()
         args = args[:-1]
-
     if not args:
-        await ctx.reply("You need to specify a habit, e.g. `!checkin meditation Monday`")
-        return
-    
-    # ─── 1.1 Enforce only unlocked habits ───
-    current_rank   = load_group_rank()
-    allowed        = {r["habit"] for r in RANKS[:current_rank]}
-    # if they try to log a habit that exists but isn’t in allowed
+        return await ctx.reply("You need at least one habit, e.g. `!checkin meditation`")
+
+    # 2️⃣ Enforce only unlocked habits
+    current_rank = load_group_rank()
+    allowed = {t["habit"] for r in RANKS[:current_rank] for t in r["tasks"]}
     for arg in args:
         name = arg.lower()
         if name in HABITS and name not in allowed:
-            # find the rank that unlocks it
-            req = next(r for r in RANKS if r["habit"] == name)
+            levels = [rk["level"] for rk in RANKS if any(t["habit"] == name for t in rk["tasks"])]
+            req = next(rk for rk in RANKS if rk["level"] == min(levels))
             return await ctx.reply(
                 f"🚫 You can’t log **{name}** yet — it unlocks at "
                 f"Rank {req['level']} ({req['name'].title()})."
             )
 
-    # 2️⃣  Parse the habits+values
+    # 3️⃣ Parse <habit> [value] pairs, with defaults
     parsed = []
     i = 0
     while i < len(args):
-        task = args[i].lower()
-        cfg  = HABITS.get(task)
+        name = args[i].lower()
+        cfg = HABITS.get(name)
         if not cfg:
-            await ctx.reply(f"Unrecognised habit: {task}")
-            return
+            return await ctx.reply(f"Unrecognised habit: {name}")
 
         if cfg["unit"] == "minutes":
-            # use .get so streaming picks up min=0
             minutes = cfg.get("min", 0)
-            # consume an explicit number if provided
+            # consume explicit number if provided
             if i + 1 < len(args) and args[i+1].isdigit():
                 minutes = int(args[i+1])
                 i += 1
-
-            # enforce minimum (for other habits)
             if minutes < cfg.get("min", 0):
-                await ctx.reply(f"{task} must be ≥ {cfg['min']} min.")
-                return
-
-            # enforce maximum (for streaming)
+                return await ctx.reply(f"{name} must be ≥ {cfg['min']} min.")
             if cfg.get("max") is not None and minutes > cfg["max"]:
-                await ctx.reply(f"{task} cannot exceed {cfg['max']} minutes per day.")
-                return
-
-            parsed.append(f"{task}:{minutes}")
-
+                return await ctx.reply(f"{name} cannot exceed {cfg['max']} minutes per day.")
+            parsed.append(f"{name}:{minutes}")
+            i += 1
 
         elif cfg["unit"] == "bool":
-            parsed.append(task)
+            parsed.append(name)
+            i += 1
 
         else:
-            await ctx.reply(f"Config error for habit: {task}")
-            return
+            return await ctx.reply(f"Config error for habit: {name}")
 
-        i += 1
-
-    # 3️⃣  Determine which date to record
+    # 4️⃣ Determine which date to record
     if override:
-        mon      = date.fromisoformat(current_week_id())
+        mon = date.fromisoformat(current_week_id())
         day_date = mon + timedelta(days=days[override])
     else:
         day_date = datetime.now(LOCAL_TZ).date()
-
     day_iso = day_date.isoformat()
 
-    uid  = str(ctx.author.id)
+    # 5️⃣ Merge into storage
+    uid = str(ctx.author.id)
     week = current_week_id()
-    
-    # 4️⃣  Store in JSON (merge with any existing entries for that day)
     user_days = DATA.setdefault(week, {}).setdefault(uid, {})
     existing = user_days.get(day_iso, [])
-
-    # remove any old tokens for the same habit(s) we’re logging now
-    parsed_names = {tok.split(":",1)[0] for tok in parsed}
-    filtered = [tok for tok in existing
-                if tok.split(":",1)[0] not in parsed_names]
-
-    # combine: keep others + add new/updated tokens
+    to_replace = {tok.split(':',1)[0] for tok in parsed}
+    filtered = [tok for tok in existing if tok.split(':',1)[0] not in to_replace]
     user_days[day_iso] = filtered + parsed
     save(DATA)
 
-    # 5️⃣  Human-friendly reply
-    pretty = []
+    # 6️⃣ Build a cleaner embed with “–” bullets
+    lines = []
     for tok in parsed:
         name, *val = tok.split(":")
-        pretty.append(HABITS[name]["reply"](val[0] if val else None))
+        label = name.capitalize()
+        if HABITS[name]["unit"] == "minutes":
+            unit_lbl = "pages" if name == "reading" else "min"
+            lines.append(f"– **{label}:** {val[0]} {unit_lbl}")
+        else:
+            lines.append(f"– **{label}**")
 
-    human_date = day_date.strftime("%A, %d %b")
-
-    # build an embed
+    human_date = day_date.strftime("%A, %d %b %Y")
     embed = Embed(
         title="✅ Check-in Recorded",
-        description=f"{ctx.author.display_name} logged:",
+        description=f"**{ctx.author.display_name}** logged on **{human_date}**",
         colour=0x2ecc71
     )
-    # add each task as its own field
-    for desc in pretty:
-        embed.add_field(name=desc, value=f"🗓 {human_date}", inline=False)
-
+    embed.add_field(name="📝 Activities", value="\n".join(lines), inline=False)
     await ctx.send(embed=embed)
-
-
-    # 6️⃣  Auto-evaluate week-boundary
-    current   = current_week_id()
-    last_eval = META.get("last_eval")
-    if last_eval and last_eval != current:
-        await evaluate_week(last_eval, ctx)
-    META["last_eval"] = current
-    save_meta(META)
-
 
 
 @bot.command()
@@ -177,7 +149,6 @@ async def progress(ctx, member: commands.MemberConverter = None):
     """
     Show a member’s progress for this week.
     """
-    # reload & pick user
     global DATA
     DATA = load()
     summary, week = get_week_summary()
@@ -190,20 +161,18 @@ async def progress(ctx, member: commands.MemberConverter = None):
     habits = summary[uid]
 
     # which habits unlocked?
-    unlocked = [r["habit"] for r in RANKS[:load_group_rank()]]
-    seen, relevant = set(), []
-    for h in unlocked:
-        if h not in seen:
-            seen.add(h)
-            relevant.append(h)
+    unlocked = []
+    for r in RANKS[:load_group_rank()]:
+        for t in r["tasks"]:
+            if t["habit"] not in unlocked:
+                unlocked.append(t["habit"])
 
     # overall %
-    total_done   = sum(min(habits.get(h,0), HABITS[h].get("weekly_target",7)) for h in relevant)
-    total_target = sum(  HABITS[h].get("weekly_target",7)              for h in relevant)
+    total_done   = sum(min(habits.get(h,0), HABITS[h].get("weekly_target",7)) for h in unlocked)
+    total_target = sum(  HABITS[h].get("weekly_target",7)              for h in unlocked)
     pct = (total_done/total_target*100) if total_target else 100
     pct_str = f"{pct:.1f}%"
 
-    # fixed bar length
     BAR_LEN = 14
     def make_bar(done, targ):
         if targ <= 0:
@@ -212,18 +181,16 @@ async def progress(ctx, member: commands.MemberConverter = None):
         filled = max(0, min(BAR_LEN, filled))
         return "█" * filled + "░" * (BAR_LEN - filled)
 
-    # build code-block table
-    max_len = max(len(h) for h in relevant)
+    max_len = max(len(h) for h in unlocked)
     lines = []
-    for h in relevant:
+    for h in unlocked:
         done = habits.get(h, 0)
-        targ = HABITS[h].get("weekly_target", 7)
+        targ = HABITS[h].get("weekly_target",7)
         bar  = make_bar(done, targ)
         lines.append(f"{h.ljust(max_len)}  {bar}  {done}/{targ}")
 
     table = "```\n" + "\n".join(lines) + "\n```"
 
-    # send embed
     week_dt = dt.date.fromisoformat(week)
     embed = Embed(
         title=f"📊 Progress for {target.display_name}",
@@ -234,92 +201,82 @@ async def progress(ctx, member: commands.MemberConverter = None):
     await ctx.send(embed=embed)
 
 
-
 @bot.command()
 async def ranks(ctx):
     """
-    Show all ranks in two columns, with each habit in “Habit: target” format.
+    Show all ranks in one column, using country-flag emojis ordered
+    from lower to higher GDP per capita.
     """
     current = load_group_rank()
 
-    EMOJI = {
-        1:  "🥫", 2:  "🧲", 3: "🥉", 4: "🔩", 5: "⚙️",
-        6:  "🥈", 7:  "🥇", 8: "💿", 9: "💎", 10: "🪐",
-        11: "☢️", 12: "🎓", 13: "🏆",
+    FLAGS = {
+        1:  "🇮🇳", 2:  "🇳🇬", 3:  "🇮🇩", 4:  "🇧🇷", 5:  "🇿🇦",
+        6:  "🇲🇽", 7:  "🇹🇷", 8:  "🇨🇳", 9:  "🇷🇺", 10: "🇰🇷",
+        11: "🇩🇪", 12: "🇯🇵", 13: "🇺🇸",
     }
 
-    half  = (len(RANKS) + 1) // 2
-    left  = RANKS[:half]
-    right = RANKS[half:]
+    lines = []
+    for r in RANKS:
+        flag  = FLAGS.get(r["level"], "")
+        tasks = ", ".join(f"{t['habit'].capitalize()}: {t['target']}" for t in r["tasks"])
+        lines.append(f"{flag} **{r['level']}. {r['name'].title()}** — {tasks}")
 
-    left_text = "\n\n".join(
-        f"{EMOJI[r['level']]} **{r['level']}. {r['name'].title()}**\n"
-        f"  {r['habit'].capitalize()}: {r['target']}"
-        for r in left
-    )
-    right_text = "\n\n".join(
-        f"{EMOJI[r['level']]} **{r['level']}. {r['name'].title()}**\n"
-        f"  {r['habit'].capitalize()}: {r['target']}"
-        for r in right
-    )
+    embed = Embed(title="🏅 Rank List", colour=0x00aaff)
+    embed.add_field(name="\u200b", value="\n".join(lines), inline=False)
 
-    embed = Embed(title="🏅 Ranks Overview", colour=0x00aaff)
-    embed.add_field(name="\u200b", value=left_text,  inline=True)
-    embed.add_field(name="\u200b", value=right_text, inline=True)
-
-    # blank spacer
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        # — current group rank —
     curr = next(r for r in RANKS if r["level"] == current)
+    # current rank + its tasks
     embed.add_field(
         name="🎖 Current Group Rank",
         value=f"**{current}. {curr['name'].title()}**",
         inline=False
     )
-
-    # — current challenge —
     embed.add_field(
         name="🏁 Current Challenge",
-        value=f"{curr['habit'].capitalize()}: {curr['target']}",
+        value=", ".join(f"{t['habit'].capitalize()}: {t['target']}" for t in curr["tasks"]),
         inline=False
     )
 
-    # footer hint
     embed.set_footer(text="Use !rank for details or !nextchallenge to preview what’s next.")
-
     await ctx.send(embed=embed)
-
 
 
 @bot.command()
 async def rank(ctx):
     """
-    Show the group’s current rank and its full cumulative challenge.
+    Show the group’s current rank and its full cumulative challenge,
+    de-duplicating any “upgraded” habit volume.
     """
-    # current rank info
     level = load_group_rank()
-    rank  = next((r for r in RANKS if r["level"] == level), None)
-    if not rank:
+    rank_entry = next((r for r in RANKS if r["level"] == level), None)
+    if not rank_entry:
         return await ctx.reply("No rank data available.")
 
-    # build embed
-    embed = Embed(
-        title=f"🎖 Current Group Rank: {level} – {rank['name'].title()}",
-        colour=0x00aaff
-    )
+    # build a map of habit → latest target
+    task_map = {}
+    for r in RANKS[:level]:
+        for t in r["tasks"]:
+            task_map[t["habit"]] = t["target"]
 
-    # list all tasks up to current level
-    tasks = "\n".join(
-        f"- **{r['habit'].capitalize()}:** {r['target']}"
-        for r in RANKS[:level]
+    # preserve appearance order, but only once each habit
+    seen = set()
+    lines = []
+    for r in RANKS[:level]:
+        for t in r["tasks"]:
+            h = t["habit"]
+            if h in task_map and h not in seen:
+                lines.append(f"- **{h.capitalize()}:** {task_map[h]}")
+                seen.add(h)
+
+    embed = Embed(
+        title=f"🎖 Current Group Rank: {level} – {rank_entry['name'].title()}",
+        colour=0x00aaff
     )
     embed.add_field(
         name="🗒️ Current Challenge",
-        value=f"Complete all of the following:\n{tasks}",
+        value="Complete all of the following:\n" + "\n".join(lines),
         inline=False
     )
-
     await ctx.send(embed=embed)
 
 
@@ -338,11 +295,9 @@ async def rankup(ctx, target: str = None):
     if target is None:
         new = old + 1
     else:
-        # try parsing as integer level
         try:
             lvl = int(target)
         except ValueError:
-            # fallback: look up by rank name (case-insensitive)
             match = next((r for r in RANKS if r["name"].lower() == target.lower()), None)
             if not match:
                 return await ctx.reply(f"🚫 Invalid rank: `{target}`")
@@ -351,24 +306,36 @@ async def rankup(ctx, target: str = None):
 
     # clamp within bounds
     new = max(1, min(new, len(RANKS)))
-
     if new <= old:
         return await ctx.reply(f"🚫 Cannot rank up to {new} (current is {old}). Use `!rankdown` to go down.")
 
+    # persist new rank
     save_group_rank(new)
-    rank = next(r for r in RANKS if r["level"] == new)
 
+    # build cumulative task list up to the new rank, de-duplicating by habit
+    task_map = {}
+    for r in RANKS[:new]:
+        for t in r["tasks"]:
+            task_map[t["habit"]] = t["target"]
+
+    seen = set()
+    lines = []
+    for r in RANKS[:new]:
+        for t in r["tasks"]:
+            h = t["habit"]
+            if h in task_map and h not in seen:
+                lines.append(f"- **{h.capitalize()}:** {task_map[h]}")
+                seen.add(h)
+
+    # announce
+    rank = next(r for r in RANKS if r["level"] == new)
     embed = Embed(
         title=f"🎉 Group Promoted to Rank {new}: {rank['name'].title()}",
         colour=0x2ecc71
     )
-    tasks = "\n".join(
-        f"- **{r['habit'].capitalize()}:** {r['target']}"
-        for r in RANKS[:new]
-    )
     embed.add_field(
         name="🆕 New Cumulative Challenge",
-        value=f"Complete all of the following:\n{tasks}",
+        value="Complete all of the following:\n" + "\n".join(lines),
         inline=False
     )
     await ctx.send(embed=embed)
@@ -400,24 +367,36 @@ async def rankdown(ctx, target: str = None):
 
     # clamp within bounds
     new = max(1, min(new, len(RANKS)))
-
     if new >= old:
         return await ctx.reply(f"🚫 Cannot rank down to {new} (current is {old}). Use `!rankup` to go up.")
 
+    # persist new rank
     save_group_rank(new)
-    rank = next(r for r in RANKS if r["level"] == new)
 
+    # build cumulative task list up to the new rank, de-duplicating by habit
+    task_map = {}
+    for r in RANKS[:new]:
+        for t in r["tasks"]:
+            task_map[t["habit"]] = t["target"]
+
+    seen = set()
+    lines = []
+    for r in RANKS[:new]:
+        for t in r["tasks"]:
+            h = t["habit"]
+            if h in task_map and h not in seen:
+                lines.append(f"- **{h.capitalize()}:** {task_map[h]}")
+                seen.add(h)
+
+    # announce
+    rank = next(r for r in RANKS if r["level"] == new)
     embed = Embed(
         title=f"⚠️ Group Demoted to Rank {new}: {rank['name'].title()}",
         colour=0xe74c3c
     )
-    tasks = "\n".join(
-        f"- **{r['habit'].capitalize()}:** {r['target']}"
-        for r in RANKS[:new]
-    )
     embed.add_field(
         name="🔽 Current Challenge",
-        value=f"Complete all of the following:\n{tasks}",
+        value="Complete all of the following:\n" + "\n".join(lines),
         inline=False
     )
     await ctx.send(embed=embed)
@@ -559,32 +538,24 @@ async def delete(ctx, *args):
 @bot.command()
 async def nextchallenge(ctx):
     """
-    Preview the next rank’s cumulative challenge for the group.
+    Preview the next rank’s challenge(s): supports multiple tasks.
     """
-    # determine the upcoming rank
     next_level = load_group_rank() + 1
     if next_level > len(RANKS):
         return await ctx.reply("🎉 The group is already at the highest rank!")
 
-    next_rank = next(r for r in RANKS if r["level"] == next_level)
+    nr = next(r for r in RANKS if r["level"] == next_level)
+    tasks = "\n".join(f"- **{t['habit'].capitalize()}:** {t['target']}" for t in nr["tasks"])
 
-    # build an embed
     embed = Embed(
-        title=f"🔮 Next Challenge: Rank {next_level} – {next_rank['name'].title()}",
+        title=f"🔮 Next Challenge: Rank {next_level} – {nr['name'].title()}",
         colour=0x8e44ad
-    )
-
-    # list all tasks up to next_level
-    tasks = "\n".join(
-        f"- **{r['habit'].capitalize()}:** {r['target']}"
-        for r in RANKS[:next_level]
     )
     embed.add_field(
         name="Tasks to Complete",
         value=f"Complete all of the following:\n{tasks}",
         inline=False
     )
-
     await ctx.send(embed=embed)
     
 
@@ -606,13 +577,13 @@ async def help_command(ctx):
     )
 
     embed.add_field(
-        name="🔹 `!checkin <habit> [value] [weekday]`",
+        name="🔹 `!checkin <habit> [value] [habit] [value] ... [weekday]`",
         value=(
-            "Log a habit for today (default) or another day this week.\n"
+            "Log one or more habits in a single command (all on the same day).\n"
             "• `!checkin meditation`\n"
-            "• `!checkin meditation 45 Tuesday`\n"
-            "• `!checkin exercise Friday`\n"
-            "• `!checkin bedtime`"
+            "• `!checkin meditation 45`\n"
+            "• `!checkin reading 20 exercise`\n"
+            "• `!checkin walking 30 meditation 45 friday`"
         ),
         inline=False
     )
@@ -633,8 +604,8 @@ async def help_command(ctx):
             "Show check-ins for you or another member for a week.\n"
             "• Default: current week\n"
             "• `!history @Friend`\n"
-            "• `!history 2025-04-28`\n"
-            "• `!history @Friend 2025-04-28`"
+            "• `!history 2025-05-05`\n"
+            "• `!history @Friend 2025-05-05`"
         ),
         inline=False
     )
@@ -663,7 +634,7 @@ async def help_command(ctx):
 
     embed.add_field(
         name="🔹 `!ranks`",
-        value="List all possible ranks and show the current group rank.",
+        value="List all ranks and their tasks in one column.",
         inline=False
     )
 
@@ -681,7 +652,7 @@ async def help_command(ctx):
     embed.add_field(
         name="🔹 `!rankdown [level|name]`",
         value=(
-            "Demote the group’s rank by 1, or jump to a specific rank.\n"
+            "Demote the group’s rank by 1, or drop to a specific rank.\n"
             "• `!rankdown` → drop down by 1\n"
             "• `!rankdown 2` → set rank to level 2\n"
             "• `!rankdown bronze` → jump to Bronze"
@@ -689,15 +660,92 @@ async def help_command(ctx):
         inline=False
     )
 
-    embed.add_field(
-        name="🔹 `!help`",
-        value="Display this help message.",
-        inline=False
-    )
-
+    embed.set_footer(text="Use !help to see this list any time.")
     await ctx.send(embed=embed)
 
 
+@bot.command()
+async def forcecheckin(ctx, member: commands.MemberConverter, *args):
+    """
+    [DEV ONLY] Force‐log one or more habits for another user.
+    Usage: !forcecheckin @User <habit> [value] [habit] [value] ... [weekday]
+    """
+    # only you can run this
+    if ctx.author.id != DEV_USER_ID:
+        return
+
+    if not args:
+        return await ctx.send("Usage: `!forcecheckin @User <habit> [value] ... [weekday]`")
+
+    # 1️⃣ Optional day‐of‐week override
+    days = {d.lower(): i for i, d in enumerate(
+        ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+    )}
+    override = None
+    if args[-1].lower() in days:
+        override = args[-1].lower()
+        args = args[:-1]
+    if not args:
+        return await ctx.send("You must specify at least one habit after the user mention.")
+
+    # 2️⃣ Parse & validate exactly as in !checkin
+    parsed = []
+    i = 0
+    while i < len(args):
+        name = args[i].lower()
+        cfg  = HABITS.get(name)
+        if not cfg:
+            return await ctx.send(f"Unrecognised habit: `{name}`")
+
+        if cfg["unit"] == "minutes":
+            # next token may be a number, else default
+            minutes = cfg.get("min", 0)
+            if i + 1 < len(args) and args[i+1].isdigit():
+                minutes = int(args[i+1])
+                i += 1
+            if minutes < cfg.get("min", 0):
+                return await ctx.send(f"`{name}` must be ≥ {cfg['min']} min.")
+            if cfg.get("max") is not None and minutes > cfg["max"]:
+                return await ctx.send(f"`{name}` cannot exceed {cfg['max']} min.")
+            parsed.append(f"{name}:{minutes}")
+            i += 1
+
+        elif cfg["unit"] == "bool":
+            parsed.append(name)
+            i += 1
+
+        else:
+            return await ctx.send(f"Config error for habit: `{name}`")
+
+    # 3️⃣ Determine date
+    if override:
+        mon      = date.fromisoformat(current_week_id())
+        day_date = mon + timedelta(days=days[override])
+    else:
+        day_date = datetime.now(LOCAL_TZ).date()
+    day_iso    = day_date.isoformat()
+
+    # 4️⃣ Write into storage as if they ran !checkin themselves
+    uid        = str(member.id)
+    week       = current_week_id()
+    user_days  = DATA.setdefault(week, {}).setdefault(uid, {})
+    existing   = user_days.get(day_iso, [])
+    to_replace = {tok.split(":",1)[0] for tok in parsed}
+    filtered   = [tok for tok in existing if tok.split(":",1)[0] not in to_replace]
+    user_days[day_iso] = filtered + parsed
+    save(DATA)
+
+    # 5️⃣ Minimal feedback
+    short = []
+    for tok in parsed:
+        h, *v = tok.split(":")
+        if v:
+            short.append(f"{h}:{v[0]}")
+        else:
+            short.append(h)
+    human_date = day_date.strftime("%d %b")
+    await ctx.send(f"✅ Forced for {member.display_name} on {human_date}: " +
+                   ", ".join(short))
 
 
 @bot.event
@@ -708,6 +756,7 @@ async def on_ready():
 @bot.command()
 async def ping(ctx):
     await ctx.send("Pong!")
+
 
 if __name__ == "__main__":
     print("Loaded token is:", TOKEN[:10] + "...")  # should show first chars, not 'None'

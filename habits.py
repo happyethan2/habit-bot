@@ -12,7 +12,7 @@ HABITS = {
         "reply": lambda _: "**exercise**",
     },
     "reading": {
-        "unit": "minutes",    # using numeric for pages
+        "unit": "minutes",    # pages
         "min": 10,
         "reply": lambda pages: f"**reading** for **{pages} pages**",
     },
@@ -33,7 +33,7 @@ HABITS = {
     },
     "diet": {
         "unit": "bool",
-        "weekly_target": 4,
+        "weekly_target": 7,
         "reply": lambda _: "**diet**",
     },
     "bedtime": {
@@ -42,9 +42,18 @@ HABITS = {
         "reply": lambda _: "**11pm bedtime**",
     },
     "streaming": {
+        "unit": "bool",
+        "weekly_target": 7,
+        "reply": lambda _: "**no streaming**",
+    },
+    "journaling": {
+        "unit": "bool",
+        "weekly_target": 7,
+        "reply": lambda _: "**journaling**",
+    },
+    "digitaldetox": {
         "unit": "minutes",
-        "min": 0,
-        "max": 60,
-        "reply": lambda mins: f"**streaming** for **{mins} min**",
+        "min": 15,
+        "reply": lambda mins: f"**digital detox** for **{mins} min**",
     },
 }

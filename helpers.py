@@ -76,22 +76,21 @@ async def evaluate_week(week_id: str, ctx):
     old_rank = load_group_rank()
     new_rank = old_rank
 
-    # did everyone meet every habit?
+    # check if all passed or all failed, otherwise no rank change
+    reqs = get_relevant_challenges(old_rank)
     all_met_all = all(
-        all(
-            habits.get(h, 0) >= HABITS[h].get("weekly_target", 7)
-            for h in HABITS
-        )
-        for habits in summary.values()
+        summary.get(uid, {}).get(h, 0) >= HABITS[h].get("weekly_target",7)
+        for uid in summary
+        for h in (r["habit"] for r in reqs)
     )
-    # did everyone miss at least one habit?
     all_missed_one = all(
         any(
-            habits.get(h, 0) < HABITS[h].get("weekly_target", 7)
-            for h in HABITS
+            summary.get(uid, {}).get(h, 0) < HABITS[h].get("weekly_target",7)
+            for h in (r["habit"] for r in reqs)
         )
-        for habits in summary.values()
+        for uid in summary
     )
+
 
     if all_met_all and old_rank < len(RANKS):
         new_rank += 1
@@ -107,3 +106,18 @@ async def evaluate_week(week_id: str, ctx):
 
     # announce
     await ctx.send("\n".join(lines))
+
+
+def get_relevant_challenges(level: int):
+    """
+    Return a list of (habit, HABITS[habit].weekly_target) for
+    every challenge up to `level`, deduping overridden older targets.
+    """
+    seen = {}
+    for rank in RANKS[:level]:
+        for ch in rank["challenges"]:
+            # always overwrite older same‐habit entries
+            seen[ch["habit"]] = ch
+    # preserve the original RANK order for uniqueness
+    return [ seen[ch["habit"]] for rank in RANKS[:level] for ch in rank["challenges"]
+             if ch["habit"] in seen and seen[ch["habit"]] is ch ]
