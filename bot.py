@@ -158,21 +158,40 @@ async def progress(ctx, member: commands.MemberConverter = None):
     if uid not in summary:
         return await ctx.reply(f"No check-ins for {target.display_name} this week.")
 
-    habits = summary[uid]
+    habits_done = summary[uid]
 
-    # which habits unlocked?
+    # Determine which habits are unlocked
+    current_rank = load_group_rank()
     unlocked = []
-    for r in RANKS[:load_group_rank()]:
+    for r in RANKS[:current_rank]:
         for t in r["tasks"]:
             if t["habit"] not in unlocked:
                 unlocked.append(t["habit"])
 
-    # overall %
-    total_done   = sum(min(habits.get(h,0), HABITS[h].get("weekly_target",7)) for h in unlocked)
-    total_target = sum(  HABITS[h].get("weekly_target",7)              for h in unlocked)
-    pct = (total_done/total_target*100) if total_target else 100
+    # Compute weekly targets per habit from RANKS (days-based tasks override default)
+    weekly_targets = {}
+    for h in unlocked:
+        day_targets = []
+        for r in RANKS[:current_rank]:
+            for t in r["tasks"]:
+                if t["habit"] == h and t["target"].endswith("days"):
+                    try:
+                        val = int(t["target"].rstrip("days"))
+                        day_targets.append(val)
+                    except ValueError:
+                        pass
+        if day_targets:
+            weekly_targets[h] = max(day_targets)
+        else:
+            weekly_targets[h] = HABITS[h].get("weekly_target", 7)
+
+    # Overall percentage
+    total_done = sum(min(habits_done.get(h, 0), weekly_targets[h]) for h in unlocked)
+    total_target = sum(weekly_targets[h] for h in unlocked)
+    pct = (total_done / total_target * 100) if total_target else 100
     pct_str = f"{pct:.1f}%"
 
+    # Progress bars
     BAR_LEN = 14
     def make_bar(done, targ):
         if targ <= 0:
@@ -181,17 +200,17 @@ async def progress(ctx, member: commands.MemberConverter = None):
         filled = max(0, min(BAR_LEN, filled))
         return "█" * filled + "░" * (BAR_LEN - filled)
 
-    max_len = max(len(h) for h in unlocked)
+    max_len = max(len(h) for h in unlocked) if unlocked else 0
     lines = []
     for h in unlocked:
-        done = habits.get(h, 0)
-        targ = HABITS[h].get("weekly_target",7)
-        bar  = make_bar(done, targ)
+        done = habits_done.get(h, 0)
+        targ = weekly_targets[h]
+        bar = make_bar(done, targ)
         lines.append(f"{h.ljust(max_len)}  {bar}  {done}/{targ}")
 
-    table = "```\n" + "\n".join(lines) + "\n```"
-
+    # Build and send embed
     week_dt = dt.date.fromisoformat(week)
+    table = "```" + "\n".join(lines) + "```"
     embed = Embed(
         title=f"📊 Progress for {target.display_name}",
         description=f"Week of {week_dt:%A %d %b %Y}\n➡️ Total: **{pct_str}**",
@@ -405,66 +424,109 @@ async def rankdown(ctx, target: str = None):
 @bot.command()
 async def history(ctx, *args):
     """
-    Show a member’s check‐in history for a week.
+    Show a member’s check-in history.
+
     Usage:
-      !history                → your current week
-      !history 2025-05-05     → your specified week
-      !history @Friend        → Friend’s current week
-      !history @Friend 2025-05-05
+      !history               → full week for you
+      !history today         → today’s entries for you
+      !history monday        → entries this week on Monday for you
     """
     data = load()
+    # Determine target user (always you in this variant)
+    member = ctx.author
+    uid = str(member.id)
 
-    # 1️⃣ Pick target member
-    if ctx.message.mentions:
-        member = ctx.message.mentions[0]
-    else:
-        member = ctx.author
+    # Day-of-week mapping
+    days = {d.lower(): i for i, d in enumerate(
+        ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+    )}
 
-    # Strip mention out of args
-    mention_ids = {f"<@{member.id}>", f"<@!{member.id}>"}
-    args = [a for a in args if a not in mention_ids]
+    # Handle "today" or specific weekday
+    if args:
+        key = args[0].lower()
+        # Today's history
+        if key == 'today':
+            day_date = datetime.now(LOCAL_TZ).date()
+            week_id = current_week_id()
+            week_data = data.get(week_id, {})
+            user_days = week_data.get(uid, {})
+            tokens = user_days.get(day_date.isoformat(), [])
+            if not tokens:
+                return await ctx.reply(f"No check-ins for today ({day_date.strftime('%A %d %b')}).")
+            # Build embed
+            embed = Embed(
+                title=f"🕑 Today's History for {member.display_name}",
+                description=f"{day_date.strftime('%A %d %b %Y')}",
+                colour=0x9b59b6
+            )
+            lines = []
+            for tok in tokens:
+                name, *val = tok.split(":")
+                if val:
+                    unit = HABITS[name]["unit"]
+                    label = "pages" if name == "reading" else "min"
+                    lines.append(f"- **{name.capitalize()}:** {val[0]} {label}")
+                else:
+                    lines.append(f"- **{name.capitalize()}**")
+            embed.add_field(name=day_date.strftime('%A %d %b'), value="\n".join(lines), inline=False)
+            return await ctx.send(embed=embed)
 
-    # 2️⃣ Determine week
-    week_id = args[0] if args else current_week_id()
-    week_dt = dt.date.fromisoformat(week_id)
+        # Specific weekday
+        if key in days:
+            offset = days[key]
+            mon = date.fromisoformat(current_week_id())
+            day_date = mon + timedelta(days=offset)
+            week_id = current_week_id()
+            week_data = data.get(week_id, {})
+            user_days = week_data.get(uid, {})
+            tokens = user_days.get(day_date.isoformat(), [])
+            if not tokens:
+                return await ctx.reply(f"No check-ins for {key.title()} ({day_date.strftime('%d %b')}).")
+            # Build embed
+            embed = Embed(
+                title=f"🕑 {key.title()}'s History for {member.display_name}",
+                description=f"{day_date.strftime('%A %d %b %Y')}",
+                colour=0x9b59b6
+            )
+            lines = []
+            for tok in tokens:
+                name, *val = tok.split(":")
+                if val:
+                    unit = HABITS[name]["unit"]
+                    label = "pages" if name == "reading" else "min"
+                    lines.append(f"- **{name.capitalize()}:** {val[0]} {label}")
+                else:
+                    lines.append(f"- **{name.capitalize()}**")
+            embed.add_field(name=day_date.strftime('%A %d %b'), value="\n".join(lines), inline=False)
+            return await ctx.send(embed=embed)
 
-    # 3️⃣ Fetch that user’s days
-    uid       = str(member.id)
+    # Default: full weekly history
+    week_id = current_week_id()
+    week_dt = date.fromisoformat(week_id)
     week_data = data.get(week_id, {})
     user_days = week_data.get(uid, {})
-
     if not user_days:
-        return await ctx.reply(
-            f"No check‐ins for {member.display_name} in week of {week_dt:%A %d %b %Y}."
-        )
+        return await ctx.reply(f"No check-ins for week of {week_dt:%A %d %b %Y}.")
 
-    # 4️⃣ Build embed
     embed = Embed(
         title=f"🕑 History for {member.display_name}",
         description=f"Week of {week_dt:%A %d %b %Y}",
         colour=0x9b59b6
     )
-
-    # 5️⃣ One field per day, with bullet‐list of habits
+    # One field per day
     for day_iso in sorted(user_days):
-        d = dt.date.fromisoformat(day_iso)
+        d = date.fromisoformat(day_iso)
         day_str = d.strftime("%A %d %b")
-
         lines = []
         for tok in user_days[day_iso]:
             name, *val = tok.split(":")
             if val:
-                # infer unit label from HABITS config
-                cfg = HABITS[name]
-                unit = "min" if cfg["unit"]=="minutes" else ""
-                # special case reading→pages
-                if name=="reading": unit = "pages"
-                lines.append(f"- **{name}**: {val[0]} {unit}".rstrip())
+                unit = HABITS[name]["unit"]
+                label = "pages" if name == "reading" else "min"
+                lines.append(f"- **{name.capitalize()}:** {val[0]} {label}")
             else:
-                lines.append(f"- **{name}**")
-
+                lines.append(f"- **{name.capitalize()}**")
         embed.add_field(name=day_str, value="\n".join(lines), inline=False)
-
     await ctx.send(embed=embed)
 
 
@@ -556,6 +618,57 @@ async def nextchallenge(ctx):
         value=f"Complete all of the following:\n{tasks}",
         inline=False
     )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def leaderboard(ctx):
+    """
+    Show cumulative totals for all minute-based habits in a mobile-friendly format.
+    """
+    from collections import defaultdict
+
+    # 1️⃣ Aggregate totals across every week
+    data = load()  # your storage.load import
+    totals = defaultdict(lambda: defaultdict(int))
+
+    for week_data in data.values():
+        for uid, days in week_data.items():
+            for tokens in days.values():
+                for tok in tokens:
+                    name, *val = tok.split(":", 1)
+                    cfg = HABITS.get(name)
+                    if cfg and cfg["unit"] == "minutes":
+                        amt = int(val[0])
+                        totals[uid][name] += amt
+
+    # 2️⃣ Build an embed with one field per user
+    embed = Embed(
+        title="🏆 Leaderboard",
+        description="Because statistics are awesome...",
+        colour=0xf1c40f
+    )
+
+    # Sort users by total sum descending
+    def user_sum(hdict): 
+        return sum(hdict.values())
+
+    for uid, habit_dict in sorted(totals.items(), key=lambda kv: -user_sum(kv[1])):
+        display = await display_name_for(uid, ctx)
+        lines = []
+        for habit, amount in habit_dict.items():
+            unit = "pages" if habit == "reading" else "min"
+            lines.append(f"– **{habit.capitalize()}:** {amount} {unit}")
+        # If someone has no minute-based entries, skip
+        if not lines:
+            continue
+
+        embed.add_field(
+            name=display,
+            value="\n".join(lines),
+            inline=False
+        )
+
     await ctx.send(embed=embed)
     
 
@@ -744,7 +857,7 @@ async def forcecheckin(ctx, member: commands.MemberConverter, *args):
         else:
             short.append(h)
     human_date = day_date.strftime("%d %b")
-    await ctx.send(f"✅ Forced for {member.display_name} on {human_date}: " +
+    await ctx.send(f"successfully forced for {member.display_name} on {human_date}: " +
                    ", ".join(short))
 
 
@@ -755,7 +868,7 @@ async def on_ready():
 # simple ping-pong sanity check
 @bot.command()
 async def ping(ctx):
-    await ctx.send("Pong!")
+    await ctx.send("pong!")
 
 
 if __name__ == "__main__":
