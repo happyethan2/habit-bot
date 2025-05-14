@@ -151,6 +151,20 @@ Replace:
 
 ---
 
+## Making Manual Progress Changes
+
+Use SCP to pull and push files to and from the remote instance to make changes to `progress.json`.
+
+Pull it down to your local machine:
+```bash
+scp -i ~/ssh_keys/habit-bot-key.pem ec2-user@3.26.26.202:/home/ec2-user/habit-bot/progress.json .
+```
+
+Push it back up after completing edits:
+```bash
+scp -i ~/ssh_keys/habit-bot-key.pem ./progress.json ec2-user@3.26.26.202:/home/ec2-user/habit-bot/progress.json
+```
+
 ## Contributing
 
 1. Fork this repository.

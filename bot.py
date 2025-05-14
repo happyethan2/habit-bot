@@ -712,13 +712,13 @@ async def help_command(ctx):
     )
 
     embed.add_field(
-        name="🔹 `!history [@User] [week]`",
+        name="🔹 `!history [@User] [today|<weekday>]`",
         value=(
-            "Show check-ins for you or another member for a week.\n"
-            "• Default: current week\n"
-            "• `!history @Friend`\n"
-            "• `!history 2025-05-05`\n"
-            "• `!history @Friend 2025-05-05`"
+            "Show check-ins for you or another member.\n"
+            "• `!history` → entire current week\n"
+            "• `!history today` → today’s entries\n"
+            "• `!history monday` → Monday’s entries this week\n"
+            "• `!history @Friend friday` → Friend’s Friday entries"
         ),
         inline=False
     )
@@ -770,6 +770,12 @@ async def help_command(ctx):
             "• `!rankdown 2` → set rank to level 2\n"
             "• `!rankdown bronze` → jump to Bronze"
         ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔹 `!leaderboard`",
+        value="Show cumulative totals for all minute-based habits across all weeks.",
         inline=False
     )
 
