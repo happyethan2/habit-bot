@@ -424,109 +424,95 @@ async def rankdown(ctx, target: str = None):
 @bot.command()
 async def history(ctx, *args):
     """
-    Show a member’s check-in history.
-
+    Show a member’s check‐in history.
     Usage:
-      !history               → full week for you
-      !history today         → today’s entries for you
-      !history monday        → entries this week on Monday for you
+      !history                     → your full current week
+      !history today               → your check-ins for today
+      !history monday              → your check-ins for Monday this week
+      !history @User               → Friend’s full current week
+      !history @User today         → Friend’s today
+      !history @User friday        → Friend’s Friday
     """
     data = load()
-    # Determine target user (always you in this variant)
-    member = ctx.author
-    uid = str(member.id)
 
-    # Day-of-week mapping
-    days = {d.lower(): i for i, d in enumerate(
+    # 1️⃣ Determine target member
+    member = ctx.author
+    if ctx.message.mentions:
+        member = ctx.message.mentions[0]
+
+    # 2️⃣ Clean out mention tokens from args
+    mention_tokens = set()
+    for m in ctx.message.mentions:
+        mention_tokens.add(f"<@{m.id}>")
+        mention_tokens.add(f"<@!{m.id}>")
+    args = [a for a in args if a not in mention_tokens]
+
+    # 3️⃣ Figure out if they asked for "today" or a weekday
+    days_map = {d.lower(): i for i, d in enumerate(
         ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
     )}
-
-    # Handle "today" or specific weekday
+    time_filter = None
     if args:
-        key = args[0].lower()
-        # Today's history
-        if key == 'today':
-            day_date = datetime.now(LOCAL_TZ).date()
-            week_id = current_week_id()
-            week_data = data.get(week_id, {})
-            user_days = week_data.get(uid, {})
-            tokens = user_days.get(day_date.isoformat(), [])
-            if not tokens:
-                return await ctx.reply(f"No check-ins for today ({day_date.strftime('%A %d %b')}).")
-            # Build embed
-            embed = Embed(
-                title=f"🕑 Today's History for {member.display_name}",
-                description=f"{day_date.strftime('%A %d %b %Y')}",
-                colour=0x9b59b6
-            )
-            lines = []
-            for tok in tokens:
-                name, *val = tok.split(":")
-                if val:
-                    unit = HABITS[name]["unit"]
-                    label = "pages" if name == "reading" else "min"
-                    lines.append(f"- **{name.capitalize()}:** {val[0]} {label}")
-                else:
-                    lines.append(f"- **{name.capitalize()}**")
-            embed.add_field(name=day_date.strftime('%A %d %b'), value="\n".join(lines), inline=False)
-            return await ctx.send(embed=embed)
+        tok = args[0].lower()
+        if tok == "today":
+            time_filter = "today"
+        elif tok in days_map:
+            time_filter = tok
 
-        # Specific weekday
-        if key in days:
-            offset = days[key]
-            mon = date.fromisoformat(current_week_id())
-            day_date = mon + timedelta(days=offset)
-            week_id = current_week_id()
-            week_data = data.get(week_id, {})
-            user_days = week_data.get(uid, {})
-            tokens = user_days.get(day_date.isoformat(), [])
-            if not tokens:
-                return await ctx.reply(f"No check-ins for {key.title()} ({day_date.strftime('%d %b')}).")
-            # Build embed
-            embed = Embed(
-                title=f"🕑 {key.title()}'s History for {member.display_name}",
-                description=f"{day_date.strftime('%A %d %b %Y')}",
-                colour=0x9b59b6
-            )
-            lines = []
-            for tok in tokens:
-                name, *val = tok.split(":")
-                if val:
-                    unit = HABITS[name]["unit"]
-                    label = "pages" if name == "reading" else "min"
-                    lines.append(f"- **{name.capitalize()}:** {val[0]} {label}")
-                else:
-                    lines.append(f"- **{name.capitalize()}**")
-            embed.add_field(name=day_date.strftime('%A %d %b'), value="\n".join(lines), inline=False)
-            return await ctx.send(embed=embed)
-
-    # Default: full weekly history
-    week_id = current_week_id()
-    week_dt = date.fromisoformat(week_id)
+    # 4️⃣ Load this week’s data for that user
+    week_id   = current_week_id()
     week_data = data.get(week_id, {})
-    user_days = week_data.get(uid, {})
-    if not user_days:
-        return await ctx.reply(f"No check-ins for week of {week_dt:%A %d %b %Y}.")
+    user_days = week_data.get(str(member.id), {})
 
+    # 5️⃣ No entries?
+    if not user_days:
+        return await ctx.reply(f"No check-ins for {member.display_name}.")
+
+    # 6️⃣ Build the subset of days to show
+    entries = {}
+    if time_filter == "today":
+        today = datetime.now(LOCAL_TZ).date()
+        iso   = today.isoformat()
+        if iso in user_days:
+            entries[iso] = user_days[iso]
+        else:
+            return await ctx.reply(f"No check-ins for {member.display_name} today.")
+    elif time_filter in days_map:
+        # map weekday to date
+        mon       = date.fromisoformat(week_id)
+        target_dt = mon + timedelta(days=days_map[time_filter])
+        iso       = target_dt.isoformat()
+        if iso in user_days:
+            entries[iso] = user_days[iso]
+        else:
+            return await ctx.reply(
+                f"No check-ins for {member.display_name} on {time_filter.title()}."
+            )
+    else:
+        # full week
+        entries = user_days
+
+    # 7️⃣ Build and send embed
     embed = Embed(
         title=f"🕑 History for {member.display_name}",
-        description=f"Week of {week_dt:%A %d %b %Y}",
+        description=f"Week of {date.fromisoformat(week_id):%A %d %b %Y}",
         colour=0x9b59b6
     )
-    # One field per day
-    for day_iso in sorted(user_days):
+    for day_iso in sorted(entries):
         d = date.fromisoformat(day_iso)
         day_str = d.strftime("%A %d %b")
         lines = []
-        for tok in user_days[day_iso]:
+        for tok in entries[day_iso]:
             name, *val = tok.split(":")
-            if val:
-                unit = HABITS[name]["unit"]
-                label = "pages" if name == "reading" else "min"
-                lines.append(f"- **{name.capitalize()}:** {val[0]} {label}")
+            cfg = HABITS[name]
+            if cfg["unit"] == "minutes":
+                unit = "pages" if name == "reading" else "min"
+                amt  = val[0] if val else cfg.get("min", 0)
+                lines.append(f"- **{name.capitalize()}:** {amt} {unit}")
             else:
                 lines.append(f"- **{name.capitalize()}**")
         embed.add_field(name=day_str, value="\n".join(lines), inline=False)
+
     await ctx.send(embed=embed)
 
 
@@ -865,6 +851,77 @@ async def forcecheckin(ctx, member: commands.MemberConverter, *args):
     human_date = day_date.strftime("%d %b")
     await ctx.send(f"successfully forced for {member.display_name} on {human_date}: " +
                    ", ".join(short))
+
+
+@bot.command()
+async def forcedelete(ctx, member: commands.MemberConverter, *args):
+    """
+    [DEV ONLY] Force‐delete one or more habits for another user.
+    Usage:
+      !forcedelete @User <habit> [habit ...] [weekday]
+    """
+    # only you can run this
+    if ctx.author.id != DEV_USER_ID:
+        return
+
+    if not args:
+        return await ctx.send("Usage: `!forcedelete @User <habit> [habit ...] [weekday]`")
+
+    # 1️⃣ Optional day‐of‐week override
+    days = {d.lower(): i for i, d in enumerate(
+        ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+    )}
+    override = None
+    if args[-1].lower() in days:
+        override = args[-1].lower()
+        args = args[:-1]
+
+    if not args:
+        return await ctx.send("You must specify at least one habit to delete.")
+
+    # 2️⃣ Normalize habit names
+    habits_to_delete = [h.lower() for h in args if h.lower() in HABITS]
+    if not habits_to_delete:
+        return await ctx.send("No valid habits provided to delete.")
+
+    # 3️⃣ Determine the target date
+    if override:
+        mon      = date.fromisoformat(current_week_id())
+        day_date = mon + timedelta(days=days[override])
+    else:
+        day_date = datetime.now(LOCAL_TZ).date()
+    day_iso    = day_date.isoformat()
+    human_date = day_date.strftime("%d %b")
+
+    # 4️⃣ Load and modify storage
+    uid       = str(member.id)
+    week      = current_week_id()
+    user_days = DATA.setdefault(week, {}).setdefault(uid, {})
+
+    tokens = user_days.get(day_iso, [])
+    if not tokens:
+        return await ctx.send(f"No entries found for {member.display_name} on {human_date}.")
+
+    # remove any tokens matching the specified habits
+    filtered = [tok for tok in tokens
+                if tok.split(":",1)[0] not in habits_to_delete]
+
+    if len(filtered) == len(tokens):
+        # nothing was removed
+        return await ctx.send(f"No matching entries for {member.display_name} on {human_date}.")
+
+    # save back
+    if filtered:
+        user_days[day_iso] = filtered
+    else:
+        user_days.pop(day_iso)
+    save(DATA)
+
+    # 5️⃣ Minimal feedback
+    await ctx.send(
+        f"🗑 Deleted for {member.display_name} on {human_date}: "
+        + ", ".join(habits_to_delete)
+    )
 
 
 @bot.event
