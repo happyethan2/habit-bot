@@ -110,14 +110,14 @@ async def evaluate_week(week_id: str, ctx):
 
 def get_relevant_challenges(level: int):
     """
-    Return a list of (habit, HABITS[habit].weekly_target) for
-    every challenge up to `level`, deduping overridden older targets.
+    Return a list of task dicts for every challenge up to `level`, 
+    deduping overridden older targets.
     """
     seen = {}
     for rank in RANKS[:level]:
-        for ch in rank["challenges"]:
-            # always overwrite older same‐habit entries
-            seen[ch["habit"]] = ch
+        for task in rank["tasks"]:
+            # always overwrite older same-habit entries
+            seen[task["habit"]] = task
     # preserve the original RANK order for uniqueness
-    return [ seen[ch["habit"]] for rank in RANKS[:level] for ch in rank["challenges"]
-             if ch["habit"] in seen and seen[ch["habit"]] is ch ]
+    return [seen[task["habit"]] for rank in RANKS[:level] for task in rank["tasks"]
+            if task["habit"] in seen and seen[task["habit"]] is task]
