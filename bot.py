@@ -5,6 +5,7 @@ from discord import app_commands
 from discord import Embed
 from dotenv import load_dotenv
 from pathlib import Path
+from typing import List
 
 import datetime as dt
 from datetime import datetime, timezone, timedelta, date
@@ -617,7 +618,7 @@ async def history(interaction: discord.Interaction, member: discord.Member = Non
 async def habit_autocomplete(
     interaction: discord.Interaction,
     current: str,
-) -> list[app_commands.Choice[str]]:
+) -> List[app_commands.Choice[str]]:
     current_rank = load_group_rank()
     allowed = []
     for r in RANKS[:current_rank]:
