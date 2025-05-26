@@ -1,7 +1,10 @@
 import os
 import discord
+import asyncio
+import reminder
 from discord.ext import commands
 from discord import app_commands
+from discord.ext import tasks
 from discord import Embed
 from dotenv import load_dotenv
 from pathlib import Path
@@ -15,7 +18,7 @@ from ranks import RANKS
 from habits import HABITS
 from rank_storage import load as load_group_rank, save as save_group_rank
 
-from helpers import load_meta, current_week_id, display_name_for, get_week_summary, save_meta, evaluate_week
+from helpers import load_meta, current_week_id, display_name_for, get_week_summary, save_meta, evaluate_week, get_all_streaks, format_streak_display
 from helpers import LOCAL_TZ
 
 
@@ -25,6 +28,7 @@ DEV_USER_ID = 109596804374360064
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 
 class HabitBot(commands.Bot):
@@ -49,8 +53,8 @@ DATA = load()
 # ------ channel restrictions -------
 CHANNEL_CONFIG = {
     "check-ins": {
-        "allowed_slash": ["checkin"],
-        "allowed_traditional": ["checkin", "forcecheckin"],
+        "allowed_slash": ["checkin", "delete", "clear"],
+        "allowed_traditional": ["checkin", "forcecheckin", "forcedelete"],
         "message": "Please use #other-commands for non-checkin commands!"
     },
     "chat": {
@@ -59,9 +63,9 @@ CHANNEL_CONFIG = {
         "message": "Bot commands aren't allowed here. Try #check-ins or #other-commands!"
     },
     "other-commands": {
-        "denied_slash": ["checkin"],
-        "denied_traditional": ["checkin", "forcecheckin"],
-        "message": "Please use #check-ins for checkin commands!"
+        "denied_slash": ["checkin", "delete", "clear"],
+        "denied_traditional": ["checkin", "forcecheckin", "forcedelete"],
+        "message": "Please use #check-ins for checkin-related commands!"
     }
 }
 
@@ -214,12 +218,14 @@ async def checkin(interaction: discord.Interaction, habits: str, day: str = "tod
         day_date = mon + timedelta(days=days[day.lower()])
     else:
         day_date = datetime.now(LOCAL_TZ).date()
-    
+
+    # Determine correct week for the date
     day_iso = day_date.isoformat()
-    
+    target_monday = day_date - timedelta(days=day_date.weekday())
+    week = target_monday.isoformat()  # Use this instead of current_week_id()
+
     # Save to storage
     uid = str(interaction.user.id)
-    week = current_week_id()
     user_days = DATA.setdefault(week, {}).setdefault(uid, {})
     existing = user_days.get(day_iso, [])
     to_replace = {tok.split(':',1)[0] for tok in parsed}
@@ -462,10 +468,6 @@ async def rankup(interaction: discord.Interaction, target: str = None):
     )
     await interaction.response.send_message(embed=embed)
 
-    # update command descriptions and re-sync
-    await update_checkin_description()
-    await bot.tree.sync()
-
 
 @bot.tree.command(name="rankdown", description="Demote the group's rank")
 @slash_channel_check()
@@ -534,7 +536,8 @@ async def rankdown(interaction: discord.Interaction, target: str = None):
 @slash_channel_check()
 @app_commands.describe(
     member="View another member's history (optional)",
-    time_filter="Filter by specific day"
+    time_filter="Filter by specific day",
+    week="Week offset (0=current, -1=last week, -2=two weeks ago, etc.)"
 )
 @app_commands.choices(time_filter=[
     app_commands.Choice(name="Today", value="today"),
@@ -547,20 +550,25 @@ async def rankdown(interaction: discord.Interaction, target: str = None):
     app_commands.Choice(name="Saturday", value="saturday"),
     app_commands.Choice(name="Sunday", value="sunday"),
 ])
-async def history(interaction: discord.Interaction, member: discord.Member = None, time_filter: str = "all"):
+async def history(interaction: discord.Interaction, member: discord.Member = None, time_filter: str = "all", week: int = 0):
     data = load()
     
     # Determine target member
     target = member or interaction.user
     
-    # Load this week's data
-    week_id = current_week_id()
+    # Calculate target week
+    current_monday = date.fromisoformat(current_week_id())
+    target_monday = current_monday + timedelta(weeks=week)
+    week_id = target_monday.isoformat()
+    
+    # Load target week's data
     week_data = data.get(week_id, {})
     user_days = week_data.get(str(target.id), {})
     
     if not user_days:
+        week_desc = "this week" if week == 0 else f"{abs(week)} week{'s' if abs(week) != 1 else ''} {'ago' if week < 0 else 'in the future'}"
         return await interaction.response.send_message(
-            f"No check-ins for {target.display_name}.",
+            f"No check-ins for {target.display_name} in {week_desc}.",
             ephemeral=True
         )
     
@@ -569,7 +577,7 @@ async def history(interaction: discord.Interaction, member: discord.Member = Non
     days_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
                 "friday": 4, "saturday": 5, "sunday": 6}
     
-    if time_filter == "today":
+    if time_filter == "today" and week == 0:
         today = datetime.now(LOCAL_TZ).date()
         iso = today.isoformat()
         if iso in user_days:
@@ -580,23 +588,23 @@ async def history(interaction: discord.Interaction, member: discord.Member = Non
                 ephemeral=True
             )
     elif time_filter in days_map:
-        mon = date.fromisoformat(week_id)
-        target_dt = mon + timedelta(days=days_map[time_filter])
+        target_dt = target_monday + timedelta(days=days_map[time_filter])
         iso = target_dt.isoformat()
         if iso in user_days:
             entries[iso] = user_days[iso]
         else:
             return await interaction.response.send_message(
-                f"No check-ins for {target.display_name} on {time_filter.title()}.",
+                f"No check-ins for {target.display_name} on {time_filter.title()} that week.",
                 ephemeral=True
             )
-    else:  # "all"
+    else:  # "all" or "today" for past weeks
         entries = user_days
     
     # Build embed
+    week_desc = "This Week" if week == 0 else f"Week {week:+d}"
     embed = Embed(
         title=f"🕑 History for {target.display_name}",
-        description=f"Week of {date.fromisoformat(week_id):%A %d %b %Y}",
+        description=f"{week_desc} - {target_monday:%A %d %b %Y}",
         colour=0x9b59b6
     )
     
@@ -615,7 +623,77 @@ async def history(interaction: discord.Interaction, member: discord.Member = Non
                 lines.append(f"- **{name.capitalize()}**")
         embed.add_field(name=day_str, value="\n".join(lines), inline=False)
     
+    # Add navigation hint
+    if week == 0:
+        embed.set_footer(text="💡 Use week:-1 to see last week, week:-2 for two weeks ago, etc.")
+    else:
+        embed.set_footer(text=f"💡 Use week:0 to return to current week")
+    
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="streaks", description="View habit streaks")
+@slash_channel_check()
+@app_commands.describe(member="View another member's streaks (optional)")
+async def streaks(interaction: discord.Interaction, member: discord.Member = None):
+    await interaction.response.defer()  # For longer operations
+    
+    target = member or interaction.user
+    uid = str(target.id)
+    
+    streaks_data = get_all_streaks(uid)
+    
+    if not streaks_data:
+        return await interaction.followup.send(
+            f"No streak data found for {target.display_name}."
+        )
+    
+    # Sort by current streak descending, then by habit name
+    sorted_habits = sorted(
+        streaks_data.items(), 
+        key=lambda x: (-x[1]["current"], x[0])
+    )
+    
+    embed = Embed(
+        title=f"🔥 Streaks for {target.display_name}",
+        colour=0xff6b35
+    )
+    
+    # Group into active (current > 0) and broken (current = 0)
+    active_streaks = []
+    broken_streaks = []
+    
+    for habit, data in sorted_habits:
+        streak_display = format_streak_display(data["current"], data["best"])
+        line = f"**{habit.capitalize()}:** {streak_display}"
+        
+        if data["current"] > 0:
+            active_streaks.append(line)
+        else:
+            broken_streaks.append(line)
+    
+    if active_streaks:
+        embed.add_field(
+            name="🔥 Active Streaks",
+            value="\n".join(active_streaks),
+            inline=False
+        )
+    
+    if broken_streaks:
+        embed.add_field(
+            name="💔 Broken Streaks",
+            value="\n".join(broken_streaks[:10]),  # Limit to avoid embed size issues
+            inline=False
+        )
+    
+    # Add some motivational footer
+    total_active = len(active_streaks)
+    if total_active > 0:
+        embed.set_footer(text=f"🚀 {total_active} active streak{'s' if total_active != 1 else ''} - keep it up!")
+    else:
+        embed.set_footer(text="💪 Start building those streaks!")
+    
+    await interaction.followup.send(embed=embed)
 
 
 async def habit_autocomplete(
@@ -699,6 +777,76 @@ async def delete(interaction: discord.Interaction, habit: str, day: str = "today
         title="🗑 Entry Deleted",
         description=f"Removed **{habit_key}** on {human_date}.",
         colour=0xe67e22
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="clear", description="Clear ALL habits for a specific day")
+@slash_channel_check()
+@app_commands.describe(day="Day to clear all habits from")
+@app_commands.choices(day=[
+    app_commands.Choice(name="Today", value="today"),
+    app_commands.Choice(name="Yesterday", value="yesterday"),
+    app_commands.Choice(name="Monday", value="monday"),
+    app_commands.Choice(name="Tuesday", value="tuesday"),
+    app_commands.Choice(name="Wednesday", value="wednesday"),
+    app_commands.Choice(name="Thursday", value="thursday"),
+    app_commands.Choice(name="Friday", value="friday"),
+    app_commands.Choice(name="Saturday", value="saturday"),
+    app_commands.Choice(name="Sunday", value="sunday"),
+])
+async def clear_day(interaction: discord.Interaction, day: str = "today"):
+    global DATA
+    DATA = load()
+    
+    # Determine date
+    if day == "yesterday":
+        day_date = datetime.now(LOCAL_TZ).date() - timedelta(days=1)
+    elif day != "today":
+        days_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                    "friday": 4, "saturday": 5, "sunday": 6}
+        mon = date.fromisoformat(current_week_id())
+        day_date = mon + timedelta(days=days_map[day])
+    else:
+        day_date = datetime.now(LOCAL_TZ).date()
+    
+    day_iso = day_date.isoformat()
+    human_date = day_date.strftime("%A, %d %b")
+    
+    # Determine correct week for the date
+    target_monday = day_date - timedelta(days=day_date.weekday())
+    week = target_monday.isoformat()
+    
+    # Check if data exists
+    uid = str(interaction.user.id)
+    week_data = DATA.get(week, {})
+    user_days = week_data.get(uid, {})
+    
+    if day_iso not in user_days or not user_days[day_iso]:
+        return await interaction.response.send_message(
+            f"No check-ins found for {human_date}.",
+            ephemeral=True
+        )
+    
+    # Store what we're clearing for the response
+    cleared_habits = []
+    for token in user_days[day_iso]:
+        habit_name = token.split(":", 1)[0]
+        cleared_habits.append(habit_name.capitalize())
+    
+    # Clear the day
+    user_days.pop(day_iso)
+    save(DATA)
+    
+    embed = Embed(
+        title="🗑️ Day Cleared",
+        description=f"Cleared all check-ins for **{human_date}**",
+        colour=0xe67e22
+    )
+    embed.add_field(
+        name="Removed Habits",
+        value=", ".join(cleared_habits) if cleared_habits else "None",
+        inline=False
     )
     await interaction.response.send_message(embed=embed)
 
@@ -910,9 +1058,19 @@ async def help_slash(interaction: discord.Interaction):
     embed.add_field(
         name="🔹 `/history`",
         value=(
-            "View check-in history.\n"
+            "View check-in history with week navigation.\n"
             "• member: Select a member (optional)\n"
-            "• time_filter: Choose 'Full Week', 'Today', or a specific day"
+            "• time_filter: Choose day or 'Full Week'\n"
+            "• week: 0=current, -1=last week, -2=two weeks ago"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔹 `/streaks`",
+        value=(
+            "View current and best habit streaks.\n"
+            "• member: Select a member (optional)"
         ),
         inline=False
     )
@@ -920,10 +1078,25 @@ async def help_slash(interaction: discord.Interaction):
     embed.add_field(
         name="🔹 `/delete`",
         value=(
-            "Delete a logged habit.\n"
+            "Delete a specific logged habit.\n"
             "• habit: Start typing to see available habits\n"
             "• day: Choose from dropdown (optional)"
         ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔹 `/clear`",
+        value=(
+            "Clear ALL habits for a specific day.\n"
+            "• day: Choose from dropdown (optional)"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔹 `/reminders`",
+        value="Toggle daily check-in reminders at 10 PM Adelaide time.",
         inline=False
     )
 
@@ -966,23 +1139,27 @@ async def help_slash(interaction: discord.Interaction):
     embed.add_field(
         name="📌 Admin Commands",
         value=(
-            "• `/rankup` - Promote group rank (admin only)\n"
-            "• `/rankdown` - Demote group rank (admin only)"
+            "• `/rankup` - Promote group rank (anyone)\n"
+            "• `/rankdown` - Demote group rank (anyone)\n"
+            "• `/testreminder` - Test reminder system (admin only)\n"
+            "• `!forcecheckin` - Force check-ins for @user (admin only)\n"
+            "• `!forcedelete` - Force delete for @user (admin only)"
         ),
         inline=False
     )
 
     embed.add_field(
-        name="💡 Tips",
+        name="💡 New Features",
         value=(
-            "• Slash commands show hints as you type!\n"
-            "• Use Tab to autocomplete\n"
-            "• Red error messages only you can see"
+            "• **Week Navigation**: Use `week:-1` in `/history` for past weeks\n"
+            "• **Streak Tracking**: See your habit streaks with `/streaks`\n"
+            "• **Smart Reminders**: Get DM reminders if you haven't checked in\n"
+            "• **Bulk Clear**: Clear entire days with `/clear`"
         ),
         inline=False
     )
 
-    embed.set_footer(text="Legacy ! commands still work during transition")
+    embed.set_footer(text="🔥 Streak tracking now available! • 🔔 Set up reminders with /reminders")
     await interaction.response.send_message(embed=embed)
 
 
@@ -1141,21 +1318,41 @@ async def forcedelete(ctx, member: commands.MemberConverter, *args):
     )
 
 
-@bot.command()
-async def sync(ctx):
-    """Force sync slash commands - DEV ONLY"""
-    if ctx.author.id != DEV_USER_ID:
-        return
+@bot.tree.command(name="reminders", description="Toggle daily check-in reminders")
+@slash_channel_check()
+async def toggle_reminders(interaction: discord.Interaction):
+    from helpers import toggle_user_reminders
     
-    try:
-        await update_command_descriptions()
-        synced = await bot.tree.sync()
-        await ctx.send(f"Synced {len(synced)} commands globally")
-    except Exception as e:
-        await ctx.send(f"Failed to sync: {e}")
+    user_id = str(interaction.user.id)
+    enabled = toggle_user_reminders(user_id)
+    
+    if enabled:
+        embed = Embed(
+            title="🔔 Reminders Enabled",
+            description="You'll get a private reminder at 10 PM Adelaide time if you haven't checked in.",
+            colour=0x2ecc71
+        )
+    else:
+        embed = Embed(
+            title="🔕 Reminders Disabled", 
+            description="You won't receive daily check-in reminders anymore.",
+            colour=0xe74c3c
+        )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Exempt sync from channel checks
-sync.checks = []
+
+@bot.tree.command(name="testreminder", description="Test the reminder system (dev only)")
+@slash_channel_check()
+@app_commands.default_permissions(administrator=True)
+async def test_reminder(interaction: discord.Interaction):
+    """Test reminder functionality - dev only"""
+    if interaction.user.id != DEV_USER_ID:
+        return await interaction.response.send_message("Dev only command.", ephemeral=True)
+    
+    await interaction.response.send_message("Testing reminder system...", ephemeral=True)
+    await reminder.send_daily_reminders()
+
 
 # simple ping-pong sanity check
 @bot.tree.command(name="ping", description="Check bot responsiveness")
@@ -1166,6 +1363,10 @@ async def ping(interaction: discord.Interaction):
 async def on_ready():
     print(f"Logged in as {bot.user}")
     print(f"Slash commands synced: {len(bot.tree.get_commands())}")
+    
+    # Initialize the reminder system
+    reminder.setup_reminders(bot)
+    print("Reminder system initialized")
 
 if __name__ == "__main__":
     print("Loaded token is:", TOKEN[:10] + "...")

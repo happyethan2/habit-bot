@@ -121,3 +121,191 @@ def get_relevant_challenges(level: int):
     # preserve the original RANK order for uniqueness
     return [seen[task["habit"]] for rank in RANKS[:level] for task in rank["tasks"]
             if task["habit"] in seen and seen[task["habit"]] is task]
+
+
+# ---------- streak functions ----------
+def calculate_streak(user_id: str, habit: str):
+    """Calculate current and best streaks for a habit"""
+    data = load()
+    current_streak = 0
+    best_streak = 0
+    temp_streak = 0
+    
+    # Check last 90 days in reverse chronological order
+    today = datetime.now(LOCAL_TZ).date()
+    
+    for i in range(90):
+        check_date = today - timedelta(days=i)
+        week_start = check_date - timedelta(days=check_date.weekday())
+        week_id = week_start.isoformat()
+        day_iso = check_date.isoformat()
+        
+        # Check if habit was completed on this day
+        completed = False
+        if week_id in data and user_id in data[week_id]:
+            day_data = data[week_id][user_id].get(day_iso, [])
+            completed = any(token.split(":")[0] == habit for token in day_data)
+        
+        if completed:
+            temp_streak += 1
+            best_streak = max(best_streak, temp_streak)
+            if i == 0:  # Most recent day (today or yesterday depending on time)
+                current_streak = temp_streak
+        else:
+            if i == 0:
+                current_streak = 0
+            temp_streak = 0
+    
+    return current_streak, best_streak
+
+def get_all_streaks(user_id: str):
+    """Get streaks for all habits a user has logged"""
+    data = load()
+    user_habits = set()
+    
+    # Find all habits this user has ever logged
+    for week_data in data.values():
+        if user_id in week_data:
+            for day_data in week_data[user_id].values():
+                for token in day_data:
+                    habit = token.split(":")[0]
+                    user_habits.add(habit)
+    
+    streaks = {}
+    for habit in user_habits:
+        current, best = calculate_streak(user_id, habit)
+        if current > 0 or best > 0:  # Only include habits with streaks
+            streaks[habit] = {"current": current, "best": best}
+    
+    return streaks
+
+def format_streak_display(current: int, best: int) -> str:
+    """Format streak for display"""
+    if current == 0:
+        return f"💔 {best} best"
+    elif current == best:
+        return f"🔥 {current} (PB!)"
+    else:
+        return f"🔥 {current} (best: {best})"
+
+
+# ---------- reminder functions ----------
+def load_reminder_prefs():
+    """Load user reminder preferences from meta.json"""
+    meta = load_meta()
+    return meta.get("reminder_users", [])
+
+def save_reminder_prefs(user_list):
+    """Save user reminder preferences to meta.json"""
+    meta = load_meta()
+    meta["reminder_users"] = user_list
+    save_meta(meta)
+
+def toggle_user_reminders(user_id: str):
+    """Toggle reminder preference for a user"""
+    prefs = load_reminder_prefs()
+    if user_id in prefs:
+        prefs.remove(user_id)
+        save_reminder_prefs(prefs)
+        return False  # Now disabled
+    else:
+        prefs.append(user_id)
+        save_reminder_prefs(prefs)
+        return True  # Now enabled
+
+def get_users_needing_reminders():
+    """Get list of users who want reminders and haven't checked in today"""
+    reminder_users = load_reminder_prefs()
+    if not reminder_users:
+        return []
+    
+    # Get today's check-ins
+    today = datetime.now(LOCAL_TZ).date()
+    week = current_week_id()
+    today_iso = today.isoformat()
+    
+    data = load()
+    week_data = data.get(week, {})
+    
+    users_needing_reminders = []
+    for user_id in reminder_users:
+        # Check if user has checked in today
+        user_days = week_data.get(user_id, {})
+        if not user_days.get(today_iso):
+            users_needing_reminders.append(user_id)
+    
+    return users_needing_reminders
+
+# Streak tracking functions
+def calculate_streak(user_id: str, habit: str):
+    """Calculate current and best streaks for a habit"""
+    data = load()
+    
+    # Check last 90 days in reverse chronological order
+    today = datetime.now(LOCAL_TZ).date()
+    
+    # Build list of completed days (True/False for each day)
+    completed_days = []
+    for i in range(90):
+        check_date = today - timedelta(days=i)
+        week_start = check_date - timedelta(days=check_date.weekday())
+        week_id = week_start.isoformat()
+        day_iso = check_date.isoformat()
+        
+        # Check if habit was completed on this day
+        completed = False
+        if week_id in data and user_id in data[week_id]:
+            day_data = data[week_id][user_id].get(day_iso, [])
+            completed = any(token.split(":")[0] == habit for token in day_data)
+        
+        completed_days.append(completed)
+    
+    # Calculate current streak (consecutive days from most recent)
+    current_streak = 0
+    for completed in completed_days:
+        if completed:
+            current_streak += 1
+        else:
+            break  # Stop at first non-completed day
+    
+    # Calculate best streak (longest consecutive sequence)
+    best_streak = 0
+    temp_streak = 0
+    for completed in completed_days:
+        if completed:
+            temp_streak += 1
+            best_streak = max(best_streak, temp_streak)
+        else:
+            temp_streak = 0
+    
+    return current_streak, best_streak
+
+def get_all_streaks(user_id: str):
+    """Get streaks for all habits a user has logged"""
+    data = load()
+    user_habits = set()
+    
+    # Find all habits this user has ever logged
+    for week_data in data.values():
+        if user_id in week_data:
+            for day_data in week_data[user_id].values():
+                for token in day_data:
+                    habit = token.split(":")[0]
+                    user_habits.add(habit)
+    
+    streaks = {}
+    for habit in user_habits:
+        current, best = calculate_streak(user_id, habit)
+        if current > 0 or best > 0:  # Only include habits with streaks
+            streaks[habit] = {"current": current, "best": best}
+    
+    return streaks
+
+def format_streak_display(current: int, best: int) -> str:
+    """Format streak for display"""
+    if current == 0:
+        return f"💔 {best} best"
+    elif current == best:
+        return f"🔥 {current} (PB!)"
+    else:
+        return f"🔥 {current} (best: {best})"
