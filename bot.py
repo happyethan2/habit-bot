@@ -141,14 +141,15 @@ def slash_channel_check():
     day="optional: log for a different DOTW"
 )
 @app_commands.choices(day=[
-    app_commands.Choice(name="today", value="today"),
-    app_commands.Choice(name="monday", value="monday"),
-    app_commands.Choice(name="Tuetuesdaysday", value="tuesday"),
-    app_commands.Choice(name="wednesday", value="wednesday"),
-    app_commands.Choice(name="thursday", value="thursday"),
-    app_commands.Choice(name="friday", value="friday"),
-    app_commands.Choice(name="saturday", value="saturday"),
-    app_commands.Choice(name="sunday", value="sunday"),
+    app_commands.Choice(name="Today", value="today"),
+    app_commands.Choice(name="Yesterday", value="yesterday"),  # Add this
+    app_commands.Choice(name="Monday", value="monday"),
+    app_commands.Choice(name="Tuesday", value="tuesday"),
+    app_commands.Choice(name="Wednesday", value="wednesday"),
+    app_commands.Choice(name="Thursday", value="thursday"),
+    app_commands.Choice(name="Friday", value="friday"),
+    app_commands.Choice(name="Saturday", value="saturday"),
+    app_commands.Choice(name="Sunday", value="sunday"),
 ])
 async def checkin(interaction: discord.Interaction, habits: str, day: str = "today"):
     # Parse habits string
@@ -204,7 +205,9 @@ async def checkin(interaction: discord.Interaction, habits: str, day: str = "tod
             i += 1
     
     # Determine date
-    if day != "today":
+    if day == "yesterday":
+        day_date = datetime.now(LOCAL_TZ).date() - timedelta(days=1)
+    elif day != "today":
         days = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, 
                 "friday": 4, "saturday": 5, "sunday": 6}
         mon = date.fromisoformat(current_week_id())
