@@ -116,16 +116,23 @@ async def gather_team_context(bot=None):
                 target_num = HABITS[habit].get("weekly_target", 7)
             
             # Risk assessment
-            if is_daily and completed < days_elapsed:
-                risk = "HIGH"  # Missing daily habit days
-            elif not is_daily and completed == 0 and days_remaining < target_num:
-                risk = "HIGH"  # No progress and not enough days left
-            elif not is_daily and completed < target_num - days_remaining:
-                risk = "MEDIUM"  # Behind pace but still possible
-            elif completed >= target_num:
-                risk = "NONE"  # Already completed
+            if is_daily:
+                if completed < (days_elapsed - 1):
+                    risk = "HIGH"  # Missing previous days - truly behind
+                elif completed < days_elapsed:
+                    risk = "MEDIUM"  # Haven't done today yet - at risk
+                else:
+                    risk = "NONE"  # Up to date including today - tracking
             else:
-                risk = "LOW"
+                # For non-daily habits
+                if completed == 0 and days_remaining < target_num:
+                    risk = "HIGH"  # No progress and not enough days left
+                elif completed < target_num - days_remaining:
+                    risk = "MEDIUM"  # Behind pace but still possible
+                elif completed >= target_num:
+                    risk = "NONE"  # Already completed
+                else:
+                    risk = "LOW"  # On pace
             
             habit_analysis[habit] = {
                 "completed": completed,
@@ -342,20 +349,6 @@ async def send_daily_update(bot):
         description += f"🎖️ **Rank {context['rank_info']['current_rank']}: {context['rank_info']['rank_name'].title()}**"
         
         embed.description = description
-        
-        # Team status field
-        status_value = f"👥 **{team_stats['active_users']}/{team_stats['total_users']}** active this week"
-        if team_stats['users_behind'] > 0:
-            status_value += f"\n⚠️ **{team_stats['users_behind']}** behind pace"
-        else:
-            status_value += f"\n✅ All members on track!"
-        embed.add_field(name="📈 Team Status", value=status_value, inline=True)
-        
-        # Current challenges field  
-        challenges = []
-        for habit, target in context['rank_info']['challenges'].items():
-            challenges.append(f"• **{habit.capitalize()}**: {target}")
-        embed.add_field(name="🎯 Current Challenges", value="\n".join(challenges), inline=True)
         
         # user status updates
         if update_data['user_status'].strip():

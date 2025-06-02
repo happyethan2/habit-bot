@@ -1079,7 +1079,7 @@ async def test_update_generation(interaction: discord.Interaction):
         today_weekday = datetime.now(LOCAL_TZ).weekday()
         summary_title = "📋 Weekly Summary" if today_weekday == 6 else "📋 Status Update"
         if update_data['summary'].strip():
-            embed.add_field(name="📋 Weekly Summary", value=update_data['summary'], inline=False)
+            embed.add_field(name=summary_title, value=update_data['summary'], inline=False)
         
         embed.set_footer(text="This is a test - no message sent to #updates")
         
@@ -1089,7 +1089,7 @@ async def test_update_generation(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Failed to generate update: {str(e)}", ephemeral=True)
 
 
-@tasks.loop(time=dt.time(hour=19, minute=30, tzinfo=LOCAL_TZ))  # 7:30 PM Adelaide
+@tasks.loop(time=dt.time(hour=22, minute=00, tzinfo=LOCAL_TZ))  # 10:00 PM Adelaide
 async def daily_update_task():
     """Send daily updates at 9 AM Adelaide time"""
     await ai_updates.send_daily_update(bot)
