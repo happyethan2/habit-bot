@@ -2,6 +2,7 @@ import os
 import discord
 import asyncio
 import reminder
+import ai_updates
 from discord.ext import commands
 from discord import app_commands
 from discord.ext import tasks
@@ -66,6 +67,11 @@ CHANNEL_CONFIG = {
         "denied_slash": ["checkin", "delete", "clear"],
         "denied_traditional": ["checkin", "forcecheckin", "forcedelete"],
         "message": "Please use #check-ins for checkin-related commands!"
+    },
+    "updates": {
+        "allowed_slash": ["dailyupdate", "testupdate"],
+        "allowed_traditional": [],
+        "message": "This channel is for AI-generated team updates."
     }
 }
 
@@ -1024,6 +1030,73 @@ async def leaderboard(interaction: discord.Interaction):
         )
     
     await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="dailyupdate", description="Generate AI team update (manual)")
+@slash_channel_check()
+@app_commands.default_permissions(administrator=True)
+async def manual_daily_update(interaction: discord.Interaction):
+    """Manually trigger a daily update"""
+    await interaction.response.defer()
+    
+    try:
+        await ai_updates.send_daily_update(bot)
+        await interaction.followup.send("✅ Daily update sent to #updates channel!")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to send update: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="testupdate", description="Test AI update generation (no send)")
+@slash_channel_check()
+@app_commands.default_permissions(administrator=True)
+async def test_update_generation(interaction: discord.Interaction):
+    """Test update generation without sending to channel"""
+    await interaction.response.defer()
+    
+    try:
+        update_data = await ai_updates.generate_daily_update(bot)
+        context = await ai_updates.gather_team_context(bot)
+        
+        # Create test embed similar to what would be sent
+        embed = discord.Embed(
+            title="🧪 Test Daily Update",
+            color=0x9b59b6,
+            timestamp=datetime.now(ai_updates.LOCAL_TZ)
+        )
+        
+        week_info = context['week_info']
+        week_start = datetime.fromisoformat(week_info['week_start']).strftime("%A %d %b %Y")
+        description = f"**Week of {week_start}**\n"
+        description += f"📅 Day {week_info['days_elapsed']}/7 • {week_info['days_remaining']} days remaining\n"
+        description += f"🎖️ **Rank {context['rank_info']['current_rank']}: {context['rank_info']['rank_name'].title()}**"
+        
+        embed.description = description
+        
+        # Add user status list
+        if update_data['user_status'].strip():
+            embed.add_field(name="👤 Individual Status", value=f"```{update_data['user_status']}```", inline=False)
+        
+        # Add AI summary
+        today_weekday = datetime.now(LOCAL_TZ).weekday()
+        summary_title = "📋 Weekly Summary" if today_weekday == 6 else "📋 Status Update"
+        if update_data['summary'].strip():
+            embed.add_field(name="📋 Weekly Summary", value=update_data['summary'], inline=False)
+        
+        embed.set_footer(text="This is a test - no message sent to #updates")
+        
+        await interaction.followup.send(embed=embed)
+            
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to generate update: {str(e)}", ephemeral=True)
+
+
+@tasks.loop(time=dt.time(hour=19, minute=30, tzinfo=LOCAL_TZ))  # 7:30 PM Adelaide
+async def daily_update_task():
+    """Send daily updates at 9 AM Adelaide time"""
+    await ai_updates.send_daily_update(bot)
+
+@daily_update_task.before_loop
+async def before_daily_update():
+    await bot.wait_until_ready()
     
 
 @bot.tree.command(name="help", description="Show all available commands")
@@ -1141,6 +1214,8 @@ async def help_slash(interaction: discord.Interaction):
         value=(
             "• `/rankup` - Promote group rank (anyone)\n"
             "• `/rankdown` - Demote group rank (anyone)\n"
+            "• `/dailyupdate` - Generate AI team update (admin only)\n"
+            "• `/testupdate` - Test AI update generation (admin only)\n"
             "• `/testreminder` - Test reminder system (admin only)\n"
             "• `!forcecheckin` - Force check-ins for @user (admin only)\n"
             "• `!forcedelete` - Force delete for @user (admin only)"
@@ -1367,6 +1442,11 @@ async def on_ready():
     # Initialize the reminder system
     reminder.setup_reminders(bot)
     print("Reminder system initialized")
+    
+    # Start daily update task
+    if not daily_update_task.is_running():
+        daily_update_task.start()
+        print("Daily update scheduler started")
 
 if __name__ == "__main__":
     print("Loaded token is:", TOKEN[:10] + "...")

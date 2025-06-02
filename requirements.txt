@@ -2,3 +2,4 @@ discord.py>=2.5.2,<3.0.0
 python-dotenv>=0.21.0
 tzdata>=2023.3
 backports.zoneinfo>=0.2.1
+openai>=1.82.1

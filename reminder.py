@@ -22,7 +22,7 @@ def setup_reminders(bot_instance):
         print("Daily reminder task started")
 
 # Scheduled task for daily reminders
-@tasks.loop(time=dt.time(hour=12, minute=30, tzinfo=LOCAL_TZ))  # 10 PM Adelaide = 12:30 UTC
+@tasks.loop(time=dt.time(hour=19, minute=30, tzinfo=LOCAL_TZ))  # 10 PM Adelaide = 12:30 UTC
 async def daily_reminder_task():
     """Send daily reminders to users who haven't checked in"""
     try:
