@@ -1,3 +1,4 @@
 .env
 habitbot-env/
 context.py
+progress.json
