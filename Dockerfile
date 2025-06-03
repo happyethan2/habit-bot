@@ -4,6 +4,10 @@ FROM python:3.8-slim
 # Set the working directory in the container
 WORKDIR /app
 
+# Create a directory for persistent data inside the container
+# This is where your JSON file will live (but be mapped externally)
+RUN mkdir -p /app/data
+
 # Install build essentials including gcc
 # This step will allow packages that need C compilation to build
 RUN apt-get update && \
