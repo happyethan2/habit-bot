@@ -1,7 +1,7 @@
 # storage.py
 import json
 from pathlib import Path
-DATA_FILE = Path("progress.json")
+DATA_FILE = Path("data/progress.json")
 
 def load():
     if DATA_FILE.exists():
