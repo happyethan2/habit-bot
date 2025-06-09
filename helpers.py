@@ -18,7 +18,7 @@ except ImportError:
 LOCAL_TZ = ZoneInfo("Australia/Adelaide")
 
 # meta for last‐evaluated week
-META_FILE = Path("meta.json")
+META_FILE = Path("data/meta.json")
 
 def load_meta():
     if META_FILE.exists():
