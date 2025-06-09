@@ -28,7 +28,7 @@ def get_openai_client():
         _client = OpenAI(api_key=api_key)
     return _client
 
-def ask_gpt(system_content, user_content, max_tokens=1000, temperature=0.7):
+def ask_gpt(system_content, user_content, max_tokens=1000, temperature=0):
     """Make OpenAI API call"""
     client = get_openai_client()
     response = client.chat.completions.create(
@@ -61,11 +61,29 @@ async def gather_team_context(bot=None):
     # Get current rank challenges
     rank_info = next(r for r in RANKS if r["level"] == current_rank)
     
-    # Build habit targets map
-    habit_targets = {}
+    # Build habit targets map using same logic as progress command
+    unlocked = []
     for r in RANKS[:current_rank]:
         for t in r["tasks"]:
-            habit_targets[t["habit"]] = t["target"]
+            if t["habit"] not in unlocked:
+                unlocked.append(t["habit"])
+
+    # Compute weekly targets per habit from RANKS (same as progress command)
+    habit_targets = {}
+    for h in unlocked:
+        day_targets = []
+        for r in RANKS[:current_rank]:
+            for t in r["tasks"]:
+                if t["habit"] == h and t["target"].endswith("days"):
+                    try:
+                        val = int(t["target"].rstrip("days"))
+                        day_targets.append(val)
+                    except ValueError:
+                        pass
+        if day_targets:
+            habit_targets[h] = max(day_targets)
+        else:
+            habit_targets[h] = HABITS[h].get("weekly_target", 7)
     
     # Helper function to get username
     async def get_username(user_id):
@@ -101,38 +119,34 @@ async def gather_team_context(bot=None):
         
         # Analyze habit progress
         habit_analysis = {}
-        for habit, target in habit_targets.items():
+        for habit, target_num in habit_targets.items():
             completed = user_summary.get(habit, 0)
             
-            # Determine if daily habit
-            is_daily = (target == "7days" or 
-                       (HABITS[habit].get("unit") == "bool" and 
-                        HABITS[habit].get("weekly_target", 0) == 7))
-            
-            # Calculate target number
-            if target.endswith("days"):
-                target_num = int(target.rstrip("days"))
-            else:
-                target_num = HABITS[habit].get("weekly_target", 7)
+            # Determine if daily habit (target_num is now available)
+            is_daily = (target_num == 7)  # Simple: if target is 7 times per week, it's daily
             
             # Risk assessment
             if is_daily:
-                if completed < (days_elapsed - 1):
-                    risk = "HIGH"  # Missing previous days - truly behind
+                # For daily habits (must be done every day)
+                if completed >= target_num:
+                    risk = "NONE"  # Already completed all required days
+                elif completed < (days_elapsed - 1):
+                    risk = "HIGH"  # Missed previous days - truly behind
                 elif completed < days_elapsed:
                     risk = "MEDIUM"  # Haven't done today yet - at risk
                 else:
-                    risk = "NONE"  # Up to date including today - tracking
+                    risk = "NONE"  # Up to date including today
             else:
-                # For non-daily habits
-                if completed == 0 and days_remaining < target_num:
-                    risk = "HIGH"  # No progress and not enough days left
-                elif completed < target_num - days_remaining:
-                    risk = "MEDIUM"  # Behind pace but still possible
-                elif completed >= target_num:
-                    risk = "NONE"  # Already completed
+                # For weekly habits (need X times per week)
+                tasks_remaining = target_num - completed
+                if completed >= target_num:
+                    risk = "NONE"  # Already completed target
+                elif tasks_remaining > days_remaining:
+                    risk = "HIGH"  # Impossible to complete - behind
+                elif tasks_remaining == days_remaining:
+                    risk = "MEDIUM"  # Must do today or will fail - at risk
                 else:
-                    risk = "LOW"  # On pace
+                    risk = "LOW"  # Have buffer days - tracking
             
             habit_analysis[habit] = {
                 "completed": completed,
@@ -203,84 +217,79 @@ async def generate_daily_update(bot=None):
     """Generate AI-powered daily update with structured data"""
     context = await gather_team_context(bot)
     
-    system_prompt = """You are an AI assistant for a Discord habit tracking bot called HabitBot. You provide daily team updates in a structured format.
-
-Analyze the team data and respond with ONLY a valid JSON object with these exact keys:
-- "user_status": An enumerated list showing each user's overall status for the week
-- "summary": A concise 3-sentence maximum paragraph covering overall team performance, trends, and actionable insights
-
-For user_status format:
-- Use format: "username: ✅ tracking" or "username: ⚠️ at risk" or "username: ❌ behind"
-- ✅ tracking = on pace to meet all weekly targets
-- ⚠️ at risk = some habits behind pace but still recoverable  
-- ❌ behind = significantly behind on daily habits or unlikely to meet targets
-- Separate each user with \\n
-
-For summary guidelines:
-- Be encouraging but honest about challenges
-- Focus on any insights, trends or weekly challenges
-- Call out accountability issues diplomatically
-- Keep to 3 sentences maximum
-
-IMPORTANT: Respond with ONLY valid JSON, no other text or formatting."""
-
+    # Generate user status ourselves (we control this logic)
+    user_status_lines = []
+    for username in sorted(context['users'].keys()):  # Sort alphabetically
+        user_data = context['users'][username]
+        high_risk_count = sum(1 for h in user_data['habits'].values() if h['risk'] == 'HIGH')
+        medium_risk_count = sum(1 for h in user_data['habits'].values() if h['risk'] == 'MEDIUM')
+        
+        if high_risk_count > 0:
+            status = "❌ behind"
+        elif medium_risk_count > 0:
+            status = "⚠️ at risk"
+        else:
+            status = "✅ tracking"
+        
+        user_status_lines.append(f"{username}: {status}")
+    
+    user_status = "\n".join(user_status_lines)
+    
+    # Simple AI prompt - just ask for summary text
+    system_prompt = """You are an AI assistant for a Discord habit tracking bot. Analyze the team data and provide a **very concise** 3-sentence summary covering team performance, trends and insights. Be honest about challenges."""
+    
     user_prompt = f"""Analyze this team's habit tracking data:
 
 WEEK: Day {context['week_info']['days_elapsed']}/7, {context['week_info']['days_remaining']} days remaining
 RANK: {context['rank_info']['current_rank']} ({context['rank_info']['rank_name'].title()})
 CHALLENGES: {context['rank_info']['challenges']}
-TEAM: {context['team_stats']['active_users']}/{context['team_stats']['total_users']} active, {context['team_stats']['users_behind']} behind pace
+TEAM: {context['team_stats']['active_users']}/{context['team_stats']['total_users']} active
 
-USER ANALYSIS (by username):
+DETAILED ANALYSIS:
 {json.dumps(context['users'], indent=2)}
 
-Return JSON with "user_status" and "summary" keys only."""
+Provide a very concise 3-sentence maximum analysis covering overall team performance and trends. Don't provide a final supportive sentence, and don't reference the team's rank.
 
-    response = ask_gpt(system_prompt, user_prompt, max_tokens=1000, temperature=0.5)
+Summary guidelines:
+- Be honest about potential challenges
+- Focus on any insights, trends or weekly challenges
+- Call out accountability issues diplomatically
+
+IMPORTANT: Be very concise and succinct with a **STRICT** character limit of 180!"""
     
-    try:
-        # Clean response and attempt JSON parse
-        cleaned_response = response.strip()
-        
-        # Remove any markdown code blocks if present
-        if cleaned_response.startswith('```'):
-            lines = cleaned_response.split('\n')
-            lines = [line for line in lines if not line.strip().startswith('```')]
-            cleaned_response = '\n'.join(lines)
-        
-        data = json.loads(cleaned_response)
-        
-        # Validate required keys
-        required_keys = ["user_status", "summary"]
-        for key in required_keys:
-            if key not in data:
-                data[key] = ""
-        
-        return data
-        
-    except json.JSONDecodeError as e:
-        print(f"❌ JSON parsing failed: {e}")
-        print(f"Raw response: {response}")
-        
-        # Enhanced fallback - try to extract content manually
-        return parse_fallback_response_new(response, context)
+    summary = ask_gpt(system_prompt, user_prompt, max_tokens=500, temperature=0.6)
+    
+    return {
+        "user_status": user_status,
+        "summary": summary.strip()
+    }
+
 
 def parse_fallback_response_new(response, context):
     """Parse non-JSON response as fallback for new format"""
     try:
-        # Generate user status list
+        print("🔄 Using fallback - generating status from risk analysis")
+        
+        # Generate user status list using same logic as main analysis
         user_status_lines = []
         for username, user_data in context['users'].items():
-            # Determine status based on habits
+            # Count risk levels
             high_risk_count = sum(1 for h in user_data['habits'].values() if h['risk'] == 'HIGH')
             medium_risk_count = sum(1 for h in user_data['habits'].values() if h['risk'] == 'MEDIUM')
+            low_risk_count = sum(1 for h in user_data['habits'].values() if h['risk'] == 'LOW')
+            none_risk_count = sum(1 for h in user_data['habits'].values() if h['risk'] == 'NONE')
             
+            print(f"🔍 {username}: HIGH={high_risk_count}, MEDIUM={medium_risk_count}, LOW={low_risk_count}, NONE={none_risk_count}")
+            
+            # Determine overall user status (same logic as AI should use)
             if high_risk_count > 0:
                 status = "❌ behind"
             elif medium_risk_count > 0:
                 status = "⚠️ at risk"
+            elif low_risk_count > 0:
+                status = "✅ tracking"  # LOW means tracking with buffer
             else:
-                status = "✅ tracking"
+                status = "✅ tracking"  # All NONE means perfect
             
             user_status_lines.append(f"{username}: {status}")
         
@@ -312,6 +321,7 @@ def parse_fallback_response_new(response, context):
             "user_status": "Status generation failed - check logs",
             "summary": f"Day {context['week_info']['days_elapsed']}/7 of the current week. AI update system needs attention."
         }
+    
 
 async def send_daily_update(bot):
     """Send daily update to #updates channel as formatted embed"""
