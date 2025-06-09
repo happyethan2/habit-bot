@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-FILE = Path("rank.json")
+FILE = Path("data/rank.json")
 
 def load():
     if FILE.exists():
