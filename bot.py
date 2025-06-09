@@ -25,7 +25,7 @@ from helpers import LOCAL_TZ
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-DEV_USER_ID = 109596804374360064
+DEV_USER_IDS = [109596804374360064, 241453518567768064]
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -148,11 +148,12 @@ def slash_channel_check():
 @slash_channel_check()
 @app_commands.describe(
     habits="HABITS: meditation, reading, journaling, porn, exercise, walking, diet, bedtime, pmo, digitaldetox, streaming",
-    day="optional: log for a different DOTW"
+    day="optional: log for a different DOTW",
+    week="Week offset (0=current, -1=last week, -2=two weeks ago, etc.)"
 )
 @app_commands.choices(day=[
     app_commands.Choice(name="Today", value="today"),
-    app_commands.Choice(name="Yesterday", value="yesterday"),  # Add this
+    app_commands.Choice(name="Yesterday", value="yesterday"),
     app_commands.Choice(name="Monday", value="monday"),
     app_commands.Choice(name="Tuesday", value="tuesday"),
     app_commands.Choice(name="Wednesday", value="wednesday"),
@@ -161,7 +162,7 @@ def slash_channel_check():
     app_commands.Choice(name="Saturday", value="saturday"),
     app_commands.Choice(name="Sunday", value="sunday"),
 ])
-async def checkin(interaction: discord.Interaction, habits: str, day: str = "today"):
+async def checkin(interaction: discord.Interaction, habits: str, day: str = "today", week: int = 0):
     # Parse habits string
     args = habits.lower().split()
     
@@ -214,25 +215,42 @@ async def checkin(interaction: discord.Interaction, habits: str, day: str = "tod
             parsed.append(name)
             i += 1
     
-    # Determine date
+    # Calculate target week
+    current_monday = date.fromisoformat(current_week_id())
+    target_monday = current_monday + timedelta(weeks=week)
+    target_week_id = target_monday.isoformat()
+    
+    # Determine date within the target week
     if day == "yesterday":
-        day_date = datetime.now(LOCAL_TZ).date() - timedelta(days=1)
+        if week == 0:
+            # Yesterday relative to current week
+            day_date = datetime.now(LOCAL_TZ).date() - timedelta(days=1)
+        else:
+            # Yesterday doesn't make sense for past weeks, default to Sunday of target week
+            day_date = target_monday + timedelta(days=6)  # Sunday
     elif day != "today":
+        # Specific day of the target week
         days = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, 
                 "friday": 4, "saturday": 5, "sunday": 6}
-        mon = date.fromisoformat(current_week_id())
-        day_date = mon + timedelta(days=days[day.lower()])
+        day_date = target_monday + timedelta(days=days[day.lower()])
     else:
-        day_date = datetime.now(LOCAL_TZ).date()
+        # "today" 
+        if week == 0:
+            # Current week's today
+            day_date = datetime.now(LOCAL_TZ).date()
+        else:
+            # For past weeks, "today" defaults to the equivalent day of week in that week
+            current_date = datetime.now(LOCAL_TZ).date()
+            current_weekday = current_date.weekday()
+            day_date = target_monday + timedelta(days=current_weekday)
 
-    # Determine correct week for the date
+    # Use the target week for storage
     day_iso = day_date.isoformat()
-    target_monday = day_date - timedelta(days=day_date.weekday())
-    week = target_monday.isoformat()  # Use this instead of current_week_id()
+    week_for_storage = target_week_id
 
     # Save to storage
     uid = str(interaction.user.id)
-    user_days = DATA.setdefault(week, {}).setdefault(uid, {})
+    user_days = DATA.setdefault(week_for_storage, {}).setdefault(uid, {})
     existing = user_days.get(day_iso, [])
     to_replace = {tok.split(':',1)[0] for tok in parsed}
     filtered = [tok for tok in existing if tok.split(':',1)[0] not in to_replace]
@@ -251,12 +269,28 @@ async def checkin(interaction: discord.Interaction, habits: str, day: str = "tod
             lines.append(f"– **{label}**")
     
     human_date = day_date.strftime("%A, %d %b %Y")
-    embed = Embed(
-        title="✅ Check-in Recorded",
-        description=f"**{interaction.user.display_name}** logged on **{human_date}**",
-        colour=0x2ecc71
-    )
+    
+    # Create embed with warning for non-current weeks
+    if week == 0:
+        embed = Embed(
+            title="✅ Check-in Recorded",
+            description=f"**{interaction.user.display_name}** logged on **{human_date}**",
+            colour=0x2ecc71
+        )
+    else:
+        week_desc = f"{abs(week)} week{'s' if abs(week) != 1 else ''} ago"
+        embed = Embed(
+            title="⚠️ Previous Week Check-in Recorded",
+            description=f"**{interaction.user.display_name}** logged on **{human_date}** ({week_desc})",
+            colour=0xf39c12  # Orange warning color
+        )
+    
     embed.add_field(name="📝 Activities", value="\n".join(lines), inline=False)
+    
+    # Add week context footer for non-current weeks
+    if week != 0:
+        embed.set_footer(text=f"💡 This was logged for week starting {target_monday:%d %b %Y}")
+    
     await interaction.response.send_message(embed=embed)
 
 
@@ -722,11 +756,13 @@ async def habit_autocomplete(
 @slash_channel_check()
 @app_commands.describe(
     habit="The habit to delete",
-    day="Day to delete from"
+    day="Day to delete from",
+    week="Week offset (0=current, -1=last week, -2=two weeks ago, etc.)"
 )
 @app_commands.autocomplete(habit=habit_autocomplete)
 @app_commands.choices(day=[
     app_commands.Choice(name="Today", value="today"),
+    app_commands.Choice(name="Yesterday", value="yesterday"),
     app_commands.Choice(name="Monday", value="monday"),
     app_commands.Choice(name="Tuesday", value="tuesday"),
     app_commands.Choice(name="Wednesday", value="wednesday"),
@@ -735,7 +771,7 @@ async def habit_autocomplete(
     app_commands.Choice(name="Saturday", value="saturday"),
     app_commands.Choice(name="Sunday", value="sunday"),
 ])
-async def delete(interaction: discord.Interaction, habit: str, day: str = "today"):
+async def delete(interaction: discord.Interaction, habit: str, day: str = "today", week: int = 0):
     global DATA
     DATA = load()
     
@@ -746,44 +782,84 @@ async def delete(interaction: discord.Interaction, habit: str, day: str = "today
             ephemeral=True
         )
     
-    # Determine date
-    if day != "today":
+    # Calculate target week
+    current_monday = date.fromisoformat(current_week_id())
+    target_monday = current_monday + timedelta(weeks=week)
+    target_week_id = target_monday.isoformat()
+    
+    # Determine date within the target week
+    if day == "yesterday":
+        if week == 0:
+            # Yesterday relative to current week
+            day_date = datetime.now(LOCAL_TZ).date() - timedelta(days=1)
+        else:
+            # Yesterday doesn't make sense for past weeks, default to Sunday of target week
+            day_date = target_monday + timedelta(days=6)  # Sunday
+    elif day != "today":
+        # Specific day of the target week
         days_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
                     "friday": 4, "saturday": 5, "sunday": 6}
-        mon = date.fromisoformat(current_week_id())
-        day_date = mon + timedelta(days=days_map[day])
+        day_date = target_monday + timedelta(days=days_map[day])
     else:
-        day_date = datetime.now(LOCAL_TZ).date()
+        # "today"
+        if week == 0:
+            # Current week's today
+            day_date = datetime.now(LOCAL_TZ).date()
+        else:
+            # For past weeks, "today" defaults to the equivalent day of week in that week
+            current_date = datetime.now(LOCAL_TZ).date()
+            current_weekday = current_date.weekday()
+            day_date = target_monday + timedelta(days=current_weekday)
     
     day_iso = day_date.isoformat()
     human_date = day_date.strftime("%A, %d %b")
     
-    # Locate and remove entry
-    week = current_week_id()
+    # Locate and remove entry from target week
     uid = str(interaction.user.id)
-    week_data = DATA.get(week, {})
+    week_data = DATA.get(target_week_id, {})
     user_days = week_data.get(uid, {})
     
     tokens = user_days.get(day_iso, [])
     filtered = [tok for tok in tokens if tok.split(":",1)[0] != habit_key]
     
     if len(filtered) == len(tokens):
+        # No entry found to delete
+        week_context = ""
+        if week != 0:
+            week_desc = f"{abs(week)} week{'s' if abs(week) != 1 else ''} {'ago' if week < 0 else 'in the future'}"
+            week_context = f" ({week_desc})"
+        
         return await interaction.response.send_message(
-            f"No `{habit_key}` entry found on {human_date}.",
+            f"No `{habit_key}` entry found on {human_date}{week_context}.",
             ephemeral=True
         )
     
+    # Update storage
     if filtered:
         user_days[day_iso] = filtered
     else:
-        user_days.pop(day_iso)
+        user_days.pop(day_iso, None)
     save(DATA)
     
-    embed = Embed(
-        title="🗑 Entry Deleted",
-        description=f"Removed **{habit_key}** on {human_date}.",
-        colour=0xe67e22
-    )
+    # Build response embed
+    if week == 0:
+        embed = Embed(
+            title="🗑 Entry Deleted",
+            description=f"Removed **{habit_key}** on {human_date}.",
+            colour=0xe67e22
+        )
+    else:
+        week_desc = f"{abs(week)} week{'s' if abs(week) != 1 else ''} {'ago' if week < 0 else 'in the future'}"
+        embed = Embed(
+            title="⚠️ Previous Week Entry Deleted",
+            description=f"Removed **{habit_key}** on {human_date} ({week_desc}).",
+            colour=0xf39c12  # Orange warning color
+        )
+    
+    # Add week context footer for non-current weeks
+    if week != 0:
+        embed.set_footer(text=f"💡 This was deleted from week starting {target_monday:%d %b %Y}")
+    
     await interaction.response.send_message(embed=embed)
 
 
@@ -1242,31 +1318,54 @@ async def help_slash(interaction: discord.Interaction):
 async def forcecheckin(ctx, member: commands.MemberConverter, *args):
     """
     [DEV ONLY] Force‐log one or more habits for another user.
-    Usage: !forcecheckin @User <habit> [value] [habit] [value] ... [weekday]
+    Usage: !forcecheckin @User <habit> [value] [habit] [value] ... [weekday] [week:N]
+    Examples: 
+      !forcecheckin @User meditation exercise
+      !forcecheckin @User reading 20 monday
+      !forcecheckin @User meditation week:-1
+      !forcecheckin @User exercise monday week:-2
     """
     # only you can run this
-    if ctx.author.id != DEV_USER_ID:
+    if ctx.author.id not in DEV_USER_IDS:
         return
 
     if not args:
-        return await ctx.send("Usage: `!forcecheckin @User <habit> [value] ... [weekday]`")
+        return await ctx.send("Usage: `!forcecheckin @User <habit> [value] ... [weekday] [week:N]`")
 
-    # 1️⃣ Optional day‐of‐week override
+    # Parse week parameter first
+    week_offset = 0
+    remaining_args = list(args)
+    
+    # Check if last argument is week:N
+    if remaining_args and remaining_args[-1].startswith("week:"):
+        try:
+            week_offset = int(remaining_args[-1].split(":", 1)[1])
+            remaining_args = remaining_args[:-1]
+        except (ValueError, IndexError):
+            return await ctx.send("Invalid week format. Use week:N (e.g., week:-1)")
+
+    # Calculate target week
+    current_monday = date.fromisoformat(current_week_id())
+    target_monday = current_monday + timedelta(weeks=week_offset)
+    target_week_id = target_monday.isoformat()
+
+    # Parse day-of-week override
     days = {d.lower(): i for i, d in enumerate(
         ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
     )}
-    override = None
-    if args[-1].lower() in days:
-        override = args[-1].lower()
-        args = args[:-1]
-    if not args:
+    day_override = None
+    if remaining_args and remaining_args[-1].lower() in days:
+        day_override = remaining_args[-1].lower()
+        remaining_args = remaining_args[:-1]
+    
+    if not remaining_args:
         return await ctx.send("You must specify at least one habit after the user mention.")
 
-    # 2️⃣ Parse & validate exactly as in !checkin
+    # Parse & validate habits (existing logic)
     parsed = []
     i = 0
-    while i < len(args):
-        name = args[i].lower()
+    while i < len(remaining_args):
+        name = remaining_args[i].lower()
         cfg  = HABITS.get(name)
         if not cfg:
             return await ctx.send(f"Unrecognised habit: `{name}`")
@@ -1274,8 +1373,8 @@ async def forcecheckin(ctx, member: commands.MemberConverter, *args):
         if cfg["unit"] == "minutes":
             # next token may be a number, else default
             minutes = cfg.get("min", 0)
-            if i + 1 < len(args) and args[i+1].isdigit():
-                minutes = int(args[i+1])
+            if i + 1 < len(remaining_args) and remaining_args[i+1].isdigit():
+                minutes = int(remaining_args[i+1])
                 i += 1
             if minutes < cfg.get("min", 0):
                 return await ctx.send(f"`{name}` must be ≥ {cfg['min']} min.")
@@ -1291,25 +1390,31 @@ async def forcecheckin(ctx, member: commands.MemberConverter, *args):
         else:
             return await ctx.send(f"Config error for habit: `{name}`")
 
-    # 3️⃣ Determine date
-    if override:
-        mon      = date.fromisoformat(current_week_id())
-        day_date = mon + timedelta(days=days[override])
+    # Determine date within target week
+    if day_override:
+        day_date = target_monday + timedelta(days=days[day_override])
     else:
-        day_date = datetime.now(LOCAL_TZ).date()
-    day_iso    = day_date.isoformat()
+        if week_offset == 0:
+            # Current week, use today
+            day_date = datetime.now(LOCAL_TZ).date()
+        else:
+            # Past/future week, use equivalent weekday
+            current_date = datetime.now(LOCAL_TZ).date()
+            current_weekday = current_date.weekday()
+            day_date = target_monday + timedelta(days=current_weekday)
 
-    # 4️⃣ Write into storage as if they ran !checkin themselves
-    uid        = str(member.id)
-    week       = current_week_id()
-    user_days  = DATA.setdefault(week, {}).setdefault(uid, {})
-    existing   = user_days.get(day_iso, [])
+    day_iso = day_date.isoformat()
+
+    # Write into storage using target week
+    uid = str(member.id)
+    user_days = DATA.setdefault(target_week_id, {}).setdefault(uid, {})
+    existing = user_days.get(day_iso, [])
     to_replace = {tok.split(":",1)[0] for tok in parsed}
-    filtered   = [tok for tok in existing if tok.split(":",1)[0] not in to_replace]
+    filtered = [tok for tok in existing if tok.split(":",1)[0] not in to_replace]
     user_days[day_iso] = filtered + parsed
     save(DATA)
 
-    # 5️⃣ Minimal feedback
+    # Build feedback message
     short = []
     for tok in parsed:
         h, *v = tok.split(":")
@@ -1317,8 +1422,14 @@ async def forcecheckin(ctx, member: commands.MemberConverter, *args):
             short.append(f"{h}:{v[0]}")
         else:
             short.append(h)
+    
     human_date = day_date.strftime("%d %b")
-    await ctx.send(f"successfully forced for {member.display_name} on {human_date}: " +
+    week_context = ""
+    if week_offset != 0:
+        week_desc = f"{abs(week_offset)} week{'s' if abs(week_offset) != 1 else ''} {'ago' if week_offset < 0 else 'in future'}"
+        week_context = f" ({week_desc})"
+    
+    await ctx.send(f"✅ Successfully forced for {member.display_name} on {human_date}{week_context}: " +
                    ", ".join(short))
 
 
@@ -1326,69 +1437,109 @@ async def forcecheckin(ctx, member: commands.MemberConverter, *args):
 async def forcedelete(ctx, member: commands.MemberConverter, *args):
     """
     [DEV ONLY] Force‐delete one or more habits for another user.
-    Usage:
-      !forcedelete @User <habit> [habit ...] [weekday]
+    Usage: !forcedelete @User <habit> [habit ...] [weekday] [week:N]
+    Examples:
+      !forcedelete @User meditation exercise
+      !forcedelete @User reading monday  
+      !forcedelete @User porn week:-1
+      !forcedelete @User exercise monday week:-2
     """
     # only you can run this
-    if ctx.author.id != DEV_USER_ID:
+    if ctx.author.id not in DEV_USER_IDS:
         return
 
     if not args:
-        return await ctx.send("Usage: `!forcedelete @User <habit> [habit ...] [weekday]`")
+        return await ctx.send("Usage: `!forcedelete @User <habit> [habit ...] [weekday] [week:N]`")
 
-    # 1️⃣ Optional day‐of‐week override
+    # Parse week parameter first
+    week_offset = 0
+    remaining_args = list(args)
+    
+    # Check if last argument is week:N
+    if remaining_args and remaining_args[-1].startswith("week:"):
+        try:
+            week_offset = int(remaining_args[-1].split(":", 1)[1])
+            remaining_args = remaining_args[:-1]
+        except (ValueError, IndexError):
+            return await ctx.send("Invalid week format. Use week:N (e.g., week:-1)")
+
+    # Calculate target week
+    current_monday = date.fromisoformat(current_week_id())
+    target_monday = current_monday + timedelta(weeks=week_offset)
+    target_week_id = target_monday.isoformat()
+
+    # Parse day-of-week override
     days = {d.lower(): i for i, d in enumerate(
         ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
     )}
-    override = None
-    if args[-1].lower() in days:
-        override = args[-1].lower()
-        args = args[:-1]
+    day_override = None
+    if remaining_args and remaining_args[-1].lower() in days:
+        day_override = remaining_args[-1].lower()
+        remaining_args = remaining_args[:-1]
 
-    if not args:
+    if not remaining_args:
         return await ctx.send("You must specify at least one habit to delete.")
 
-    # 2️⃣ Normalize habit names
-    habits_to_delete = [h.lower() for h in args if h.lower() in HABITS]
+    # Normalize habit names and validate
+    habits_to_delete = [h.lower() for h in remaining_args if h.lower() in HABITS]
     if not habits_to_delete:
         return await ctx.send("No valid habits provided to delete.")
 
-    # 3️⃣ Determine the target date
-    if override:
-        mon      = date.fromisoformat(current_week_id())
-        day_date = mon + timedelta(days=days[override])
+    # Determine date within target week
+    if day_override:
+        day_date = target_monday + timedelta(days=days[day_override])
     else:
-        day_date = datetime.now(LOCAL_TZ).date()
-    day_iso    = day_date.isoformat()
+        if week_offset == 0:
+            # Current week, use today
+            day_date = datetime.now(LOCAL_TZ).date()
+        else:
+            # Past/future week, use equivalent weekday
+            current_date = datetime.now(LOCAL_TZ).date()
+            current_weekday = current_date.weekday()
+            day_date = target_monday + timedelta(days=current_weekday)
+
+    day_iso = day_date.isoformat()
     human_date = day_date.strftime("%d %b")
 
-    # 4️⃣ Load and modify storage
-    uid       = str(member.id)
-    week      = current_week_id()
-    user_days = DATA.setdefault(week, {}).setdefault(uid, {})
+    # Load and modify storage using target week
+    uid = str(member.id)
+    user_days = DATA.setdefault(target_week_id, {}).setdefault(uid, {})
 
     tokens = user_days.get(day_iso, [])
     if not tokens:
-        return await ctx.send(f"No entries found for {member.display_name} on {human_date}.")
+        week_context = ""
+        if week_offset != 0:
+            week_desc = f"{abs(week_offset)} week{'s' if abs(week_offset) != 1 else ''} {'ago' if week_offset < 0 else 'in future'}"
+            week_context = f" ({week_desc})"
+        return await ctx.send(f"No entries found for {member.display_name} on {human_date}{week_context}.")
 
-    # remove any tokens matching the specified habits
+    # Remove any tokens matching the specified habits
     filtered = [tok for tok in tokens
                 if tok.split(":",1)[0] not in habits_to_delete]
 
     if len(filtered) == len(tokens):
         # nothing was removed
-        return await ctx.send(f"No matching entries for {member.display_name} on {human_date}.")
+        week_context = ""
+        if week_offset != 0:
+            week_desc = f"{abs(week_offset)} week{'s' if abs(week_offset) != 1 else ''} {'ago' if week_offset < 0 else 'in future'}"
+            week_context = f" ({week_desc})"
+        return await ctx.send(f"No matching entries for {member.display_name} on {human_date}{week_context}.")
 
-    # save back
+    # Save back to storage
     if filtered:
         user_days[day_iso] = filtered
     else:
         user_days.pop(day_iso)
     save(DATA)
 
-    # 5️⃣ Minimal feedback
+    # Build feedback message
+    week_context = ""
+    if week_offset != 0:
+        week_desc = f"{abs(week_offset)} week{'s' if abs(week_offset) != 1 else ''} {'ago' if week_offset < 0 else 'in future'}"
+        week_context = f" ({week_desc})"
+
     await ctx.send(
-        f"🗑 Deleted for {member.display_name} on {human_date}: "
+        f"🗑 Deleted for {member.display_name} on {human_date}{week_context}: "
         + ", ".join(habits_to_delete)
     )
 
@@ -1422,7 +1573,7 @@ async def toggle_reminders(interaction: discord.Interaction):
 @app_commands.default_permissions(administrator=True)
 async def test_reminder(interaction: discord.Interaction):
     """Test reminder functionality - dev only"""
-    if interaction.user.id != DEV_USER_ID:
+    if interaction.user.id not in DEV_USER_IDS:
         return await interaction.response.send_message("Dev only command.", ephemeral=True)
     
     await interaction.response.send_message("Testing reminder system...", ephemeral=True)
