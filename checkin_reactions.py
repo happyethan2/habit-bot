@@ -114,7 +114,7 @@ async def post_for_date(bot: discord.Client, target_date_str: Optional[str] = No
         token, mins = _default_token_for(h, latest.get(h))
         suffix = f" — min {mins} min" if mins is not None else ""
         lines.append(f"{EMOJI_MAP[h]}  **{h.capitalize()}**{suffix}")
-    desc = "\\n".join(lines) if lines else "_No habits configured for this rank._"
+    desc = "\n".join(lines) if lines else "_No habits configured for this rank._"
 
     title = f"Daily Check-in — {datetime.fromisoformat(target_date_str).strftime('%a %d %b %Y')}"
     embed = Embed(title=title, description=desc, colour=0x2ecc71)
