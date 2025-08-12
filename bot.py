@@ -65,9 +65,7 @@ CHANNEL_CONFIG = {
         "allowed_traditional": [],
         "message": "Bot commands aren't allowed here. Try #check-ins or #other-commands!"
     },
-    "other-commands": {
-        "allowed_slash": ["postcheckin"],
-        "denied_slash": ["checkin", "delete", "clear"],
+    "other-commands": {        "denied_slash": ["checkin", "delete", "clear"],
         "denied_traditional": ["checkin", "forcecheckin", "forcedelete"],
         "message": "Please use #check-ins for checkin-related commands!"
     },
