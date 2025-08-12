@@ -1590,7 +1590,8 @@ async def ping(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
-    # fast guild sync so slash commands appear immediately in this server
+
+    # Fast guild sync so slash commands appear immediately in this server
     try:
         for g in bot.guilds:
             try:
@@ -1613,7 +1614,6 @@ async def on_ready():
     if not daily_update_task.is_running():
         daily_update_task.start()
         print("Daily update scheduler started")
-
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     # Ignore bot's own reactions
@@ -1674,3 +1674,5 @@ async def postcheckin_cmd(ctx, date: str = "today"):
 if __name__ == "__main__":
     print("Loaded token is:", TOKEN[:10] + "...")
     bot.run(TOKEN)
+
+

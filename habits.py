@@ -17,9 +17,9 @@ HABITS = {
         "reply": lambda pages: f"**reading** for **{pages} pages**",
     },
     "walking": {
-        "unit": "minutes",
-        "min": 30,
-        "reply": lambda mins: f"**walking** for **{mins} min**",
+        "unit": "bool",
+        "weekly_target": 4,
+        "reply": lambda _: "**walking**",
     },
     "porn": {
         "unit": "bool",
@@ -38,12 +38,12 @@ HABITS = {
     },
     "bedtime": {
         "unit": "bool",
-        "weekly_target": 4,
+        "weekly_target": 5,
         "reply": lambda _: "**11pm bedtime**",
     },
     "streaming": {
         "unit": "bool",
-        "weekly_target": 7,
+        "weekly_target": 5,
         "reply": lambda _: "**no streaming**",
     },
     "journaling": {
