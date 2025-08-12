@@ -1614,10 +1614,6 @@ async def on_ready():
         daily_update_task.start()
         print("Daily update scheduler started")
 
-if __name__ == "__main__":
-    print("Loaded token is:", TOKEN[:10] + "...")
-    bot.run(TOKEN)
-
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     # Ignore bot's own reactions
@@ -1673,3 +1669,8 @@ async def postcheckin_cmd(ctx, date: str = "today"):
             return await ctx.reply("Invalid date. Use 'today', 'yesterday', or YYYY-MM-DD.", mention_author=False)
     ids = await checkin_reactions.post_for_date(bot, target)
     await ctx.reply(f"Posted check-in for **{target}** (message id(s): {', '.join(map(str, ids))}).", mention_author=False)
+
+
+if __name__ == "__main__":
+    print("Loaded token is:", TOKEN[:10] + "...")
+    bot.run(TOKEN)
