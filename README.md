@@ -195,3 +195,11 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 #### Admin
 - `/postcheckin <date>`: Re‑post the check‑in embed for a given date (`YYYY-MM-DD`, `today`, `yesterday`). Admin‑only.
+
+
+### Slash command visibility notes
+- Commands are synced globally at startup and **also per-guild** to appear instantly.
+- If you still can't see a command, reload the Discord client (Ctrl+R) and try in a different channel (some channels may block commands).
+
+### Logging
+- Set `PYTHONUNBUFFERED=1` in your Docker environment to see logs immediately in `docker logs`.

@@ -66,6 +66,7 @@ CHANNEL_CONFIG = {
         "message": "Bot commands aren't allowed here. Try #check-ins or #other-commands!"
     },
     "other-commands": {
+        "allowed_slash": ["postcheckin"],
         "denied_slash": ["checkin", "delete", "clear"],
         "denied_traditional": ["checkin", "forcecheckin", "forcedelete"],
         "message": "Please use #check-ins for checkin-related commands!"
@@ -1589,6 +1590,16 @@ async def ping(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
+    # fast guild sync so slash commands appear immediately in this server
+    try:
+        for g in bot.guilds:
+            try:
+                await bot.tree.sync(guild=g)
+                print(f"Guild commands synced for: {g.name}")
+            except Exception as e:
+                print(f"Guild sync failed for {g.name}: {e}")
+    except Exception as e:
+        print(f"Top-level guild sync error: {e}")
     # Start daily 6AM check-in poster
     checkin_reactions.setup(bot)
     print(f"Logged in as {bot.user}")
@@ -1643,3 +1654,22 @@ async def postcheckin(interaction: discord.Interaction, date: str):
     await interaction.response.defer(ephemeral=True)
     ids = await checkin_reactions.post_for_date(bot, target)
     await interaction.followup.send(f"Posted check-in for **{target}** (message id(s): {', '.join(map(str, ids))}).", ephemeral=True)
+
+
+# Temporary prefix fallback for immediate testing
+@bot.command(name="postcheckin")
+@commands.has_permissions(administrator=True)
+async def postcheckin_cmd(ctx, date: str = "today"):
+    date_l = date.lower()
+    if date_l == "today":
+        target = datetime.now(LOCAL_TZ).date().isoformat()
+    elif date_l == "yesterday":
+        target = (datetime.now(LOCAL_TZ).date() - timedelta(days=1)).isoformat()
+    else:
+        try:
+            datetime.fromisoformat(date)
+            target = date
+        except ValueError:
+            return await ctx.reply("Invalid date. Use 'today', 'yesterday', or YYYY-MM-DD.", mention_author=False)
+    ids = await checkin_reactions.post_for_date(bot, target)
+    await ctx.reply(f"Posted check-in for **{target}** (message id(s): {', '.join(map(str, ids))}).", mention_author=False)
