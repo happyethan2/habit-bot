@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+import checkin_reactions
 import os
 import discord
 import asyncio
@@ -1587,6 +1589,8 @@ async def ping(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
+    # Start daily 6AM check-in poster
+    checkin_reactions.setup(bot)
     print(f"Logged in as {bot.user}")
     print(f"Slash commands synced: {len(bot.tree.get_commands())}")
     
@@ -1602,3 +1606,40 @@ async def on_ready():
 if __name__ == "__main__":
     print("Loaded token is:", TOKEN[:10] + "...")
     bot.run(TOKEN)
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    # Ignore bot's own reactions
+    if payload.user_id == bot.user.id:
+        return
+    await checkin_reactions.handle_reaction(bot, payload, added=True)
+
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    await checkin_reactions.handle_reaction(bot, payload, added=False)
+
+
+# Admin utility to (re)post a check-in embed for a specific date
+@bot.tree.command(name="postcheckin", description="Admin: Post the daily check-in embed for a date (YYYY-MM-DD, today, or yesterday)")
+@app_commands.describe(date="Date in YYYY-MM-DD or 'today'/'yesterday'")
+async def postcheckin(interaction: discord.Interaction, date: str):
+    # Restrict to admins
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("Only admins can use this.", ephemeral=True)
+
+    if date.lower() == "today":
+        target = datetime.now(LOCAL_TZ).date().isoformat()
+    elif date.lower() == "yesterday":
+        target = (datetime.now(LOCAL_TZ).date() - timedelta(days=1)).isoformat()
+    else:
+        try:
+            # Validate ISO date
+            datetime.fromisoformat(date)
+            target = date
+        except ValueError:
+            return await interaction.response.send_message("Invalid date. Use YYYY-MM-DD, 'today', or 'yesterday'.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+    ids = await checkin_reactions.post_for_date(bot, target)
+    await interaction.followup.send(f"Posted check-in for **{target}** (message id(s): {', '.join(map(str, ids))}).", ephemeral=True)

@@ -178,3 +178,20 @@ scp -i ~/ssh_keys/habit-bot-key.pem ./progress.json ec2-user@3.26.26.202:/home/e
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+### New: Reaction‑based Daily Check‑ins (6:00 Adelaide)
+
+- Every morning at **06:00 Australia/Adelaide**, the bot posts a **Daily Check‑in** embed in `#check-ins` with one emoji per habit unlocked at the current rank.
+- **Click a reaction to log the minimum/default** for that habit (e.g., 🧘 logs meditation for 30 min at Rank 7).  
+  - Want to log **more than the minimum**? Use `/checkin` as usual (custom values take precedence over reactions).
+- **Undo**: remove your reaction to un‑check the default value for that day. If you logged a **custom** value via `/checkin`, removing the reaction does **nothing** (we don’t override custom entries).
+- **Backfill**: React on **yesterday’s** (or any day’s) check‑in message to write to **that date**.
+- Confirmations go to **`#check-in-logs`** to avoid cluttering `#check-ins`.
+
+#### Channels & permissions
+- `#check-ins`: Only reactions and the `/checkin` command should be used here (configure channel perms in Discord; the bot already warns if other commands are used).
+- `#check-in-logs`: A read‑only channel for confirmation messages (“✅ Ethan checked meditation for 2025‑08‑11”). Create this channel if it doesn’t exist.
+- Bot requires: **View Channel**, **Send Messages**, **Add Reactions**, **Read Message History**, optional **Manage Messages** (to remove unknown reactions).
+
+#### Admin
+- `/postcheckin <date>`: Re‑post the check‑in embed for a given date (`YYYY-MM-DD`, `today`, `yesterday`). Admin‑only.
